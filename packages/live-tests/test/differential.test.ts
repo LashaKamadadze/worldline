@@ -17,7 +17,7 @@ import {
 } from 'stdb-localfirst/client';
 import * as localfirst from 'stdb-localfirst/server';
 import { LiveServer } from '../src/fixture';
-import { canon, connect, mod, reducers, uuid } from '../src/client';
+import { beginRawSession, canon, connect, mod, reducers, uuid } from '../src/client';
 
 let server: LiveServer;
 
@@ -50,10 +50,22 @@ describe('fake ctx.db vs real host', () => {
       ...tableSpecsFromSchema((localfirst as any).default, 'lf'),
     ];
     const local = new LocalStore(specs, { authoritative: true });
+    // Both sides open the same session: the host through the handshake reducer,
+    // the local store through the same body the fake server runs.
+    const session = await beginRawSession(conn);
+    const opened = executeReducer(
+      local,
+      (ctx, args) => localfirst.beginSessionBody(ctx.db.lf, ctx, args as any),
+      { clientId: session.lfClient, epoch: session.lfEpoch },
+      { sender: c.identity, timestamp: Timestamp.now(), connectionId: null, rng: new SeededRng(0) }
+    );
+    expect(opened.status).toBe('predicted');
+    if (opened.status === 'predicted') local.commitToBase(opened.writes);
     const bindings = reducers as any;
     const serializers: Record<string, (w: BinaryWriter, v: any) => void> = {};
     const deserializers: Record<string, any> = {};
     for (const [key, b] of Object.entries<any>(bindings)) {
+      if (b.paramsType === undefined) continue; // the `lf` group of submodule reducers
       serializers[key] = ProductType.makeSerializer(b.paramsType);
       deserializers[key] = ProductType.makeDeserializer(b.paramsType);
     }
@@ -79,7 +91,7 @@ describe('fake ctx.db vs real host', () => {
         accessor = kind === 'toggle' ? 'toggleTodo' : 'deleteTodo';
         args = { id };
       }
-      const full = { ...args, intentId: uuid(), clientTs: Timestamp.now() };
+      const full = { ...args, intentId: uuid(), clientTs: Timestamp.now(), ...session };
 
       // (ii) local, authoritative, same wrapped export.
       const localExec = executeReducer(local, (mod as any)[accessor], full, {

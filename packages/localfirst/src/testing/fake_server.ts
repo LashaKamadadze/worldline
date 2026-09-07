@@ -4,6 +4,8 @@ import { LocalStore, specKey, type Delta } from '../client/local_store';
 import { SeededRng } from '../client/rng';
 import { tableSpecsFromSchema, type Row, type TableSpec } from '../client/table_spec';
 import type { ReducerBinding } from '../client/local_first';
+import { beginSessionBody } from '../server/index';
+import { deserializeSessionArgs, sessionReducerName } from '../shared/session';
 import { INTENT_ID_PARAM } from '../shared/symbols';
 
 export interface ServerCallResult {
@@ -30,6 +32,8 @@ export class FakeServer {
   readonly store: LocalStore;
   readonly executions: ExecutionRecord[] = [];
   readonly effectRuns = new Map<string, number>();
+  /** Optional trace sink for the simulation. */
+  trace: ((message: string) => void) | null = null;
   readonly rootAccessors: string[];
   #entries = new Map<
     string,
@@ -67,6 +71,21 @@ export class FakeServer {
         deserialize: ProductType.makeDeserializer(b.paramsType),
       });
     }
+    // The submodule's handshake reducer, addressed as `<alias>.begin_session` on the wire.
+    for (const alias of Object.keys(submodules)) {
+      this.#entries.set(sessionReducerName(alias), {
+        accessor: 'beginSession',
+        fn: (ctx, args) => beginSessionBody(ctx.db[alias], ctx, args as any),
+        deserialize: deserializeSessionArgs,
+      });
+    }
+  }
+
+  /** The session epoch the server currently holds for a client id, or null. */
+  sessionEpoch(clientId: Uuid, alias = 'lf'): bigint | null {
+    const key = specKey(this.store.spec(`${alias}.sessions`));
+    const row = this.store.get(key, this.store.spec(key).rowKey({ clientId }));
+    return row === undefined ? null : (row.epoch as bigint);
   }
 
   onDelta(cb: (accessor: string, delta: Delta) => void): () => void {
@@ -107,6 +126,7 @@ export class FakeServer {
     if (exec.status !== 'predicted') {
       const error =
         exec.status === 'failed' ? String((exec.error as any)?.message ?? exec.error) : exec.reason;
+      if (this.trace) this.trace(`server rejected ${intentId} ${reducerName}: ${error}`);
       this.executions.push({
         intentId: intentId?.toString() ?? null,
         reducer: reducerName,
@@ -124,6 +144,7 @@ export class FakeServer {
     if (intentId && !duplicate) {
       const k = intentId.toString();
       this.effectRuns.set(k, (this.effectRuns.get(k) ?? 0) + 1);
+      if (this.trace) this.trace(`server applied ${k} ${reducerName} effects=${effects}`);
     }
     const deltas = this.store.commitToBase(exec.writes);
     this.executions.push({

@@ -12,3 +12,11 @@ export const LF_PARAMS: unique symbol = Symbol.for('stdb-localfirst.params') as 
 /** Parameter names the wrapper appends to every offline-capable reducer. */
 export const INTENT_ID_PARAM = 'intentId';
 export const CLIENT_TS_PARAM = 'clientTs';
+
+/**
+ * Session fence parameters, appended after the two above. An intent is only
+ * applied when the pair names the sender's current session; a copy that was
+ * still in the network when the client began a new session is rejected.
+ */
+export const SESSION_CLIENT_PARAM = 'lfClient';
+export const SESSION_EPOCH_PARAM = 'lfEpoch';

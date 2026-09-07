@@ -8,7 +8,7 @@ import { FakeServer } from '../src/testing/fake_server';
 import { FaultyStorage } from '../src/testing/faulty_storage';
 import * as mod from '../src/testing/sample_module';
 import * as localfirst from '../src/server/index';
-import { VirtualScheduler } from '../src/testing/scheduler';
+import { VirtualScheduler, flushMicrotasks } from '../src/testing/scheduler';
 
 const bindings = bindingsFromModule(mod as any);
 
@@ -93,12 +93,15 @@ describe('end to end against the fake server', () => {
   it('resends after a lost ack and the server applies the intent exactly once', async () => {
     const w = world(11);
     const lf = await w.open();
+    const plan = { ...LAN };
+    const flaky = w.link(plan);
+    flaky.connect();
+    lf.connect(flaky);
+    await w.sched.runUntilIdle(); // handshake done; from here on every ack is lost
+    plan.dropAck = 1;
     const id = new Uuid(9n);
     const h = lf.call(mod.createTodo, { id, title: 'once' });
     await h.durable;
-    const flaky = w.link({ ...LAN, dropAck: 1 });
-    flaky.connect();
-    lf.connect(flaky);
     await w.sched.runUntilIdle();
     expect(w.server.snapshot().get('todos')!.length).toBe(1);
     expect(lf.pending().length).toBe(1); // still waiting: ack never came
@@ -148,6 +151,87 @@ describe('end to end against the fake server', () => {
     expect(events).toContain('failed');
     expect(events).toContain('cancelled');
     await lf.close();
+  });
+
+  it('fences a copy left in the network by an earlier connection', async () => {
+    const w = world(41);
+    const id = new Uuid(77n);
+    const other = await w.open(new FaultyStorage(new SeededRng(98)));
+    const otherLink = w.link();
+    otherLink.connect();
+    other.connect(otherLink);
+    await other.call(mod.createTodo, { id, title: 'shared' }).durable;
+    await w.sched.runUntilIdle();
+
+    // A slow link: the toggle takes a full second to reach the server.
+    const lf = await w.open();
+    const slow = w.link({ ...LAN, minLatencyMicros: 1_000_000n, maxLatencyMicros: 1_000_000n });
+    slow.connect();
+    lf.connect(slow);
+    await flushMicrotasks(); // the handshake call is now in the network
+    await w.sched.runFor(2_100_000n); // handshake round trip: 2 s
+    expect(lf.db.todos.id.find(id)?.title).toBe('shared');
+    const toggle = lf.call(mod.toggleTodo, { id });
+    await toggle.durable;
+    await w.sched.runFor(100_000n);
+    expect(slow.calls).toBe(2); // handshake + toggle, the toggle still in the network
+    lf.disconnect();
+    slow.disconnect();
+
+    // Meanwhile the row disappears, so the resend on a fresh session is rejected.
+    other.call(mod.deleteTodo, { id });
+    await w.sched.runFor(100_000n);
+    const fast = w.link();
+    fast.connect();
+    lf.connect(fast);
+    await w.sched.runFor(100_000n);
+    expect(await toggle.settled).toBe('failed');
+    expect(lf.pending().length).toBe(0);
+
+    // The row comes back, then the old copy of the toggle finally arrives.
+    other.call(mod.createTodo, { id, title: 'shared again' });
+    await w.sched.runFor(100_000n);
+    await w.sched.runUntilIdle();
+    const toggles = w.server.executions.filter(e => e.reducer === 'toggle_todo');
+    expect(toggles.map(e => e.ok)).toEqual([false, false]);
+    expect(w.server.effectRuns.has(toggle.intentId.toString())).toBe(false);
+    expect(w.server.isApplied(toggle.intentId)).toBe(false);
+    expect(w.server.snapshot().get('todos')![0]!.done).toBe(false);
+    expect(lf.db.todos.id.find(id)?.done).toBe(false);
+    expect(w.server.sessionEpoch(lf.log.session!.clientId)).toBe(2n);
+    await lf.close();
+    await other.close();
+  });
+
+  it('does not send until the server has accepted the session', async () => {
+    const w = world(43);
+    const lf = await w.open();
+    const h = lf.call(mod.bump, { name: 's', by: 1n });
+    await h.durable;
+    const lossy = w.link({ ...LAN, dropCall: 1 });
+    lossy.connect();
+    lf.connect(lossy);
+    await w.sched.runUntilIdle();
+    expect(lossy.calls).toBe(1); // the handshake, lost
+    expect(lossy.callsDropped).toBe(1);
+    expect(lf.log.session?.epoch).toBe(1n);
+    expect(lf.pending().length).toBe(1);
+    expect(w.server.executions.length).toBe(0);
+    lf.disconnect();
+    lossy.disconnect();
+    const good = w.link();
+    good.connect();
+    lf.connect(good);
+    await w.sched.runUntilIdle();
+    expect(await h.settled).toBe('acked');
+    expect(lf.log.session?.epoch).toBe(2n);
+    expect(w.server.sessionEpoch(lf.log.session!.clientId)).toBe(2n);
+    // The session survives a restart and keeps counting from where it left off.
+    await lf.close();
+    const again = await w.open(w.storage.crash());
+    expect(again.log.session?.epoch).toBe(2n);
+    expect(again.log.session?.clientId.toString()).toBe(lf.log.session!.clientId.toString());
+    await again.close();
   });
 
   it('rejects locally what the server would reject', async () => {

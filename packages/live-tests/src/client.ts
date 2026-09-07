@@ -10,8 +10,11 @@ import { Identity, Uuid } from 'spacetimedb';
 import {
   LocalFirst,
   createSdkLink,
+  encodeSessionArgs,
+  sessionReducerName,
   type IntentEvent,
   type LocalFirstOptions,
+  type Session,
   type WorkingSet,
 } from 'stdb-localfirst/client';
 import { NodeFsStorage } from 'stdb-localfirst/client/node';
@@ -26,6 +29,18 @@ export const WORKING_SET: WorkingSet = {
 export const ACCESSORS = ['todos', 'counters'];
 
 export const uuid = (): Uuid => Uuid.fromRandomBytesV4(crypto.getRandomValues(new Uint8Array(16)));
+
+/**
+ * Open a session for a raw SDK connection that calls wrapped reducers itself
+ * (bypassing LocalFirst). Returns the fields such calls must carry.
+ */
+export async function beginRawSession(
+  conn: DbConnection,
+  session: Session = { clientId: uuid(), epoch: 1n }
+): Promise<{ lfClient: Uuid; lfEpoch: bigint }> {
+  await conn.callReducer(sessionReducerName('lf'), encodeSessionArgs(session));
+  return { lfClient: session.clientId, lfEpoch: session.epoch };
+}
 
 export interface Connected {
   conn: DbConnection;

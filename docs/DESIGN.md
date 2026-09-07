@@ -25,7 +25,9 @@ pending   = intents persisted locally and not yet acked/failed/cancelled
 Rebase replays every pending intent against the new base whenever the base
 changes (a server delta) or the pending set changes (an ack, a failure, a new
 call). An intent whose reducer now throws is marked failed; intents that read
-what it wrote are cancelled before they are sent.
+what it wrote are cancelled if they have never been sent. An intent handed to
+any transport, or recovered from the log after a restart, may already be
+applied, so it is always sent and the server decides its fate.
 
 ## Invariants (checked by the simulation on every seed)
 
@@ -40,6 +42,16 @@ Invariant 4 is the server's job: `offlineReducer` records every applied intent
 id in `applied_intents` and returns early on a repeat, so at-least-once
 delivery collapses to exactly-once. Invariant 6 is the log's job.
 
+Invariant 3 needs one more fence. Dedup only records successes (a rejected
+reducer rolls back its marker row too), so a copy of an intent left in the
+network by a dead connection could still run after a resend on a new
+connection was rejected and reported as failed. Every client therefore holds a
+session `{clientId, epoch}`: the log persists it, `connect()` bumps the epoch,
+fsyncs it and announces it with `<alias>.begin_session` before anything is
+sent, and every wrapped call carries `lfClient`/`lfEpoch`. The server keeps the
+newest epoch per client in `sessions` and rejects any intent whose epoch is
+not the current one, so once the client has moved on, nothing older can land.
+
 ## Durability
 
 Intent log, two slots (`intents.log.a`, `intents.log.b`):
@@ -49,6 +61,8 @@ Intent log, two slots (`intents.log.a`, `intents.log.b`):
 - Each slot starts with a header frame carrying a generation number and ends,
   when compacted, with a commit frame. The slot with the highest generation
   and a valid header wins on open.
+- A session frame carries the client id and epoch; the last one in the slot
+  is the current session, and compaction writes it right after the header.
 - Append goes to the active slot and is fsynced before `call()` reports the
   intent durable. A failed or torn append marks the slot dirty; the next write
   compacts into the other slot instead of appending after garbage.
@@ -84,6 +98,7 @@ at module load.
 | snapshot bytes | 512 MiB | bounds one write |
 | listeners per kind | 1 024 | leak detector |
 | timestamps | 2000..2200 | catches ms/µs confusion at the boundary |
+| session epoch | 2^64 - 1 | u64 on the wire; one per `connect()` |
 
 ## Back of the envelope
 

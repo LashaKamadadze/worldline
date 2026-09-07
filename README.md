@@ -20,7 +20,7 @@ Design, invariants, limits and threat model: [docs/DESIGN.md](docs/DESIGN.md).
 
 | Path | Purpose |
 |---|---|
-| `packages/localfirst/src/server` | Submodule (`applied_intents`, purge schedule) and the `offlineReducer()` wrapper |
+| `packages/localfirst/src/server` | Submodule (`applied_intents`, `sessions`, purge schedule) and the `offlineReducer()` wrapper |
 | `packages/localfirst/src/client` | `LocalFirst` engine: local store, executor, intent log, snapshot, syncer, SDK link, stores |
 | `packages/localfirst/src/sys-shim` | Stub for the host-only `spacetime:sys@x.y` import so module code loads on the client |
 | `packages/localfirst/src/testing` | Deterministic simulation: fake server, virtual network, fault-injecting storage |
@@ -53,12 +53,17 @@ export const createTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid(), titl
   });
 ```
 
-`offlineReducer` appends two parameters, `intentId: uuid` and `clientTs: timestamp`.
-On the server it checks `applied_intents` before running the body, so a
-redelivered intent is a silent no-op. `installPurge` starts a scheduled reducer
-that forgets markers older than the retention window (default 30 days). That
-window is the contract: a client offline longer than that whose ack was lost
-could run an intent twice.
+`offlineReducer` appends four parameters: `intentId: uuid`, `clientTs: timestamp`,
+`lfClient: uuid` and `lfEpoch: u64`. On the server it checks `applied_intents`
+before running the body, so a redelivered intent is a silent no-op, and then
+requires `lfClient`/`lfEpoch` to name the caller's current session (the
+submodule's `sessions` table), so a copy left in the network by an earlier
+connection cannot run after the client has already been told the resend
+failed. The client opens a session with `<alias>.begin_session` on every
+`connect()` before it sends anything. `installPurge` starts a scheduled reducer
+that forgets markers and sessions older than the retention window (default 30
+days). That window is the contract: a client offline longer than that whose
+ack was lost could run an intent twice.
 
 ## Client side
 
@@ -106,7 +111,7 @@ Reads: `lf.db.todos.iter()`, `lf.db.todos.id.find(id)`, or reactive
 
 - Reducer errors: see rule 7. The local executor treats any throw as a rejection, so predictions match either way; only the message text differs.
 - A raw `DbConnection` does not reconnect by itself. When the socket closes, `onDisconnect` fires once, `isActive` becomes false, and that object never fires `onConnect` again. Rebuild a new connection from the builder (with the saved token so the identity is preserved) with your own backoff, or use the SDK's framework providers, which do this through their `ConnectionManager`. Either way the pattern in "Client side" is right: create the link in `onConnect`, call `lf.disconnect()` in `onDisconnect`. The new connection re-applies the subscription, which replaces the base layer, and pending intents drain against it.
-- Intents in flight when the socket dies are resent by the new connection; `applied_intents` on the host makes the resend a no-op.
+- Intents in flight when the socket dies are resent by the new connection; `applied_intents` on the host makes the resend a no-op if the original ran, and the new session's epoch makes the original a no-op if the resend ran first.
 
 ## Durability design
 

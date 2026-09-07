@@ -54,4 +54,12 @@ export {
   LF_PARAMS,
   INTENT_ID_PARAM,
   CLIENT_TS_PARAM,
+  SESSION_CLIENT_PARAM,
+  SESSION_EPOCH_PARAM,
 } from '../shared/symbols';
+export {
+  SESSION_REDUCER,
+  sessionReducerName,
+  encodeSessionArgs,
+  type Session,
+} from '../shared/session';

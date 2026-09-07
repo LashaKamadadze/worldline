@@ -6,6 +6,7 @@ import { SeededRng } from '../src/client/rng';
 import { tableSpecsFromSchema } from '../src/client/table_spec';
 import { LF_INNER, LF_WRAPPED } from '../src/shared/symbols';
 import * as localfirst from '../src/server/index';
+import { beginSessionBody } from '../src/server/index';
 import * as mod from '../src/testing/sample_module';
 
 // A realistic wall-clock instant: the executor asserts timestamps fall in 2000..2200.
@@ -45,16 +46,16 @@ describe('executor', () => {
   });
 
   it('runs the wrapped export with dedup against namespaced submodule tables', () => {
-    const specs = [
-      ...tableSpecsFromSchema(mod.default),
-      ...tableSpecsFromSchema(localfirst.default, 'lf'),
-    ];
-    const store = new LocalStore(specs, { authoritative: true });
+    const store = authoritativeStore();
+    const clientId = new Uuid(500n);
+    openSession(store, clientId, 1n);
     const args = {
       id: new Uuid(1n),
       title: 'x',
       intentId: new Uuid(99n),
       clientTs: new Timestamp(NOW_MICROS),
+      lfClient: clientId,
+      lfEpoch: 1n,
     };
     const first = executeReducer(store, mod.createTodo as any, args, info());
     expect(first.status).toBe('predicted');
@@ -71,4 +72,90 @@ describe('executor', () => {
       expect(n).toBe(0);
     }
   });
+
+  it('rejects an intent whose session is unknown, stale, or ahead of the server', () => {
+    const store = authoritativeStore();
+    const clientId = new Uuid(501n);
+    openSession(store, clientId, 2n);
+    const call = (epoch: bigint, lfClient = clientId, intentId = new Uuid(7n)) =>
+      executeReducer(
+        store,
+        mod.bump as any,
+        {
+          name: 'a',
+          by: 1n,
+          intentId,
+          clientTs: new Timestamp(NOW_MICROS),
+          lfClient,
+          lfEpoch: epoch,
+        },
+        info()
+      );
+    for (const outcome of [call(1n), call(3n), call(2n, new Uuid(502n))]) {
+      expect(outcome.status).toBe('failed');
+      if (outcome.status === 'failed') {
+        expect((outcome.error as Error).message).toBe('stale session');
+      }
+    }
+    expect(store.count('counters')).toBe(0);
+    const current = call(2n);
+    expect(current.status).toBe('predicted');
+    if (current.status === 'predicted') store.commitToBase(current.writes);
+    expect(store.count('counters')).toBe(1);
+    // Dedup comes first: an applied intent redelivered with an old epoch is a silent no-op.
+    const replay = call(1n);
+    expect(replay.status).toBe('predicted');
+    if (replay.status === 'predicted') {
+      let n = 0;
+      for (const l of replay.writes.values()) n += l.size;
+      expect(n).toBe(0);
+    }
+  });
+
+  it('begin_session moves epochs forward and binds a client id to its first identity', () => {
+    const store = authoritativeStore();
+    const clientId = new Uuid(503n);
+    const attempt = (epoch: bigint, sender = new Identity(7n)) =>
+      executeReducer(
+        store,
+        (ctx, args) => beginSessionBody(ctx.db.lf, ctx, args as any),
+        { clientId, epoch },
+        { ...info(), sender }
+      );
+    expect(attempt(0n).status).toBe('failed');
+    openSession(store, clientId, 3n);
+    const stale = attempt(3n);
+    expect(stale.status).toBe('failed');
+    if (stale.status === 'failed') {
+      expect((stale.error as Error).message).toBe('stale session epoch');
+    }
+    const foreign = attempt(4n, new Identity(8n));
+    expect(foreign.status).toBe('failed');
+    if (foreign.status === 'failed')
+      expect((foreign.error as Error).message).toBe('client id belongs to another identity');
+    const next = attempt(4n);
+    expect(next.status).toBe('predicted');
+    if (next.status === 'predicted') store.commitToBase(next.writes);
+    expect(store.count('lf.sessions')).toBe(1);
+  });
 });
+
+function authoritativeStore(): LocalStore {
+  const specs = [
+    ...tableSpecsFromSchema(mod.default),
+    ...tableSpecsFromSchema(localfirst.default, 'lf'),
+  ];
+  return new LocalStore(specs, { authoritative: true });
+}
+
+/** Run the handshake against the store exactly as the fake server does. */
+function openSession(store: LocalStore, clientId: Uuid, epoch: bigint): void {
+  const out = executeReducer(
+    store,
+    (ctx, args) => beginSessionBody(ctx.db.lf, ctx, args as any),
+    { clientId, epoch },
+    info()
+  );
+  expect(out.status).toBe('predicted');
+  if (out.status === 'predicted') store.commitToBase(out.writes);
+}

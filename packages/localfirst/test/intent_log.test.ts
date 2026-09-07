@@ -67,6 +67,31 @@ describe('IntentLog', () => {
     expect([...again.pending.keys()]).toEqual([rec(5).intentId.toString()]);
   });
 
+  it('persists the session across reopen and compaction; a failed append leaves it', async () => {
+    const storage = new MemoryStorage();
+    const log = await IntentLog.open(storage);
+    expect(log.session).toBeNull();
+    const first = await log.beginSession(() => new Uuid(77n));
+    expect(first).toEqual({ clientId: new Uuid(77n), epoch: 1n });
+    const second = await log.beginSession(() => new Uuid(78n));
+    expect(second.clientId.asBigInt()).toBe(77n); // the id is chosen once
+    expect(second.epoch).toBe(2n);
+    await log.append(rec(1));
+    await log.compact();
+    let again = await IntentLog.open(storage);
+    expect(again.session).toEqual(second);
+    expect(again.pending.size).toBe(1);
+
+    storage.fault = op => (op === 'append' ? 'fail' : undefined);
+    await expect(again.beginSession(() => new Uuid(79n))).rejects.toThrow();
+    expect(again.session).toEqual(second);
+    storage.fault = undefined;
+    const third = await again.beginSession(() => new Uuid(79n));
+    expect(third.epoch).toBe(3n);
+    again = await IntentLog.open(storage);
+    expect(again.session).toEqual(third);
+  });
+
   it('keeps a volatile intent in memory when the append fails', async () => {
     const storage = new MemoryStorage();
     const log = await IntentLog.open(storage);

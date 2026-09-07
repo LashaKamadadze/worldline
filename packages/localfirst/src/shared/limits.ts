@@ -51,6 +51,9 @@ export const LISTENERS_MAX = 1_024;
 export const SNAPSHOT_DEBOUNCE_MS_DEFAULT = 2_000;
 export const SNAPSHOT_DEBOUNCE_MS_MAX = 60_000;
 
+/** Session epochs are u64 on the wire; one is consumed per `connect()`. */
+export const SESSION_EPOCH_MAX = (1n << 64n) - 1n;
+
 /** Marks appended between compactions once the queue is empty. */
 export const COMPACT_EVERY_MARKS_DEFAULT = 64;
 
@@ -64,5 +67,6 @@ assert(LOG_FRAME_BYTES_MAX > INTENT_ARGS_BYTES_MAX, 'a frame must hold the large
 assert(INFLIGHT_WINDOW_MAX <= INTENTS_PENDING_MAX, 'window cannot exceed pending');
 assert(SNAPSHOT_DEBOUNCE_MS_DEFAULT <= SNAPSHOT_DEBOUNCE_MS_MAX, 'default debounce within max');
 assert(TIMESTAMP_MICROS_MIN < TIMESTAMP_MICROS_MAX, 'timestamp range is ordered');
+assert(SESSION_EPOCH_MAX > 0n, 'session epoch bound positive');
 assert(READ_SET_ENTRIES_MAX > 0, 'read set bound positive');
 assert(WRITE_SET_ENTRIES_MAX > 0, 'write set bound positive');

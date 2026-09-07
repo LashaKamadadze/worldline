@@ -16,6 +16,7 @@ import { FaultyStorage, NO_FAULTS, type FaultPlan } from './faulty_storage';
 import { VirtualScheduler } from './scheduler';
 import * as sampleModule from './sample_module';
 import * as localfirst from '../server/index';
+import { encodeSessionArgs, sessionReducerName, type Session } from '../shared/session';
 
 /**
  * Deterministic simulation of one to N local-first clients against a fake host.
@@ -140,6 +141,8 @@ class Simulation {
   readonly server: FakeServer;
   readonly clients: SimClient[] = [];
   readonly foreignIdentity = new Identity(0xf0f0f0n);
+  /** The foreign writer's session; opened once at setup, like any other client's. */
+  readonly foreignSession: Session = { clientId: new Uuid(0xf0f0f0n), epoch: 1n };
   readonly stats = { calls: 0, localRejects: 0, acked: 0, failed: 0, cancelled: 0 };
   readonly clock = (): bigint => this.sched.timeMicros;
 
@@ -159,6 +162,7 @@ class Simulation {
       this.clock,
       serverRng
     );
+    this.server.trace = message => this.trace(message);
   }
 
   trace(message: string): void {
@@ -168,6 +172,12 @@ class Simulation {
   // ------------------------------------------------------------- lifecycle
 
   async setup(): Promise<void> {
+    const handshake = this.server.call(
+      sessionReducerName('lf'),
+      encodeSessionArgs(this.foreignSession),
+      this.foreignIdentity
+    );
+    assert(handshake.ok, 'foreign session handshake must succeed on a fresh server');
     const count = this.opts.clients ?? 1;
     for (let i = 0; i < count; i++) {
       const storage = new FaultyStorage(new SeededRng(this.rng.u32()), this.faults);
@@ -244,8 +254,13 @@ class Simulation {
   }
 
   onIntent(client: SimClient, event: IntentEvent): void {
+    if (event.type === 'sent') {
+      this.trace(`client ${client.identity} sent ${idKey(event.intent.intentId)}`);
+    }
     if (event.type !== 'acked' && event.type !== 'failed' && event.type !== 'cancelled') return;
     const key = idKey(event.intent.intentId);
+    const why = event.type === 'failed' ? String((event.error as Error)?.message) : '';
+    this.trace(`client ${client.identity} ${event.type} ${key} ${why}`);
     const entry = client.ledger.get(key);
     if (entry !== undefined) {
       if (entry.status !== undefined && entry.status !== event.type) {
@@ -433,6 +448,8 @@ class Simulation {
       ...args,
       intentId: Uuid.fromRandomBytesV4(this.rng.fill(new Uint8Array(16))),
       clientTs: new Timestamp(this.clock()),
+      lfClient: this.foreignSession.clientId,
+      lfEpoch: this.foreignSession.epoch,
     });
     const result = this.server.call(binding.name, writer.getBuffer(), this.foreignIdentity);
     this.trace(`foreign ${accessor} ok=${result.ok}`);

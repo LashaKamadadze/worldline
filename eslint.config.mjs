@@ -4,7 +4,14 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/node_modules/**', '**/dist/**', '**/module_bindings/**', '**/*.mjs', '.claude/**'],
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/module_bindings/**',
+      '**/generated/**',
+      '**/*.mjs',
+      '.claude/**',
+    ],
   },
   ...tseslint.configs.recommendedTypeChecked,
   {

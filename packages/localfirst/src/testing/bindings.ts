@@ -1,6 +1,13 @@
 import { t } from 'spacetimedb/server';
 import type { ReducerBinding } from '../client/local_first';
-import { CLIENT_TS_PARAM, INTENT_ID_PARAM, LF_PARAMS, LF_WRAPPED } from '../shared/symbols';
+import {
+  CLIENT_TS_PARAM,
+  INTENT_ID_PARAM,
+  LF_PARAMS,
+  LF_WRAPPED,
+  SESSION_CLIENT_PARAM,
+  SESSION_EPOCH_PARAM,
+} from '../shared/symbols';
 
 export function toSnakeCase(s: string): string {
   return s
@@ -22,6 +29,8 @@ export function bindingsFromModule(mod: Record<string, any>): Record<string, Red
       ...val[LF_PARAMS],
       [INTENT_ID_PARAM]: t.uuid(),
       [CLIENT_TS_PARAM]: t.timestamp(),
+      [SESSION_CLIENT_PARAM]: t.uuid(),
+      [SESSION_EPOCH_PARAM]: t.u64(),
     };
     out[key] = {
       name: toSnakeCase(key),

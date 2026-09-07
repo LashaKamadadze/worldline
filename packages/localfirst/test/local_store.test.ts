@@ -19,7 +19,11 @@ describe('LocalStore', () => {
     expect(todos.indexes.map(i => i.name)).toContain('id');
     expect(todos.indexes.find(i => i.name === 'id')!.isPrimaryKey).toBe(true);
     const sub = tableSpecsFromSchema(localfirst.default, 'lf');
-    expect(sub.map(t => t.accessorName).sort()).toEqual(['appliedIntents', 'purgeSchedule']);
+    expect(sub.map(t => t.accessorName).sort()).toEqual([
+      'appliedIntents',
+      'purgeSchedule',
+      'sessions',
+    ]);
     expect(sub.find(t => t.accessorName === 'purgeSchedule')!.autoInc.length).toBe(1);
   });
 

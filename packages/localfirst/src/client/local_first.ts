@@ -10,14 +10,22 @@ import {
   SNAPSHOT_DEBOUNCE_MS_DEFAULT,
   SNAPSHOT_DEBOUNCE_MS_MAX,
 } from '../shared/limits';
-import { CLIENT_TS_PARAM, INTENT_ID_PARAM, LF_INNER, LF_WRAPPED } from '../shared/symbols';
+import { encodeSessionArgs, sessionReducerName } from '../shared/session';
+import {
+  CLIENT_TS_PARAM,
+  INTENT_ID_PARAM,
+  LF_INNER,
+  LF_WRAPPED,
+  SESSION_CLIENT_PARAM,
+  SESSION_EPOCH_PARAM,
+} from '../shared/symbols';
 import { deepEqual, matchRange } from './compare';
 import { dependentsOf } from './deps';
 import { LocalFirstError } from './errors';
 import { executeReducer, type ExecOutcome } from './executor';
 import { idKey, IntentLog, type IntentRecord, type IntentStatus } from './intent_log';
 import { LocalStore, type Coverage } from './local_store';
-import { CryptoRng, uuidV7, type Rng } from './rng';
+import { CryptoRng, uuidV4, uuidV7, type Rng } from './rng';
 import type { WorkingSet } from './sdk_link';
 import { SnapshotStore, type SnapshotMeta } from './snapshot';
 import type { StorageAdapter } from './storage/adapter';
@@ -30,11 +38,17 @@ export interface ReducerBinding {
   paramsType: any;
 }
 
+/** Generated `reducers` maps nest submodule reducers under their alias (`lf.beginSession`). */
+export type ReducerBindings = Record<string, ReducerBinding | Record<string, ReducerBinding>>;
+
+const isBinding = (value: unknown): value is ReducerBinding =>
+  typeof value === 'object' && value !== null && typeof (value as any).name === 'string';
+
 export interface LocalFirstOptions {
   /** The SpacetimeDB module namespace object: `import * as mod from './module'`. */
   module: Record<string, any>;
   /** Generated client bindings' `reducers` accessor map (wire names + param types). */
-  reducers: Record<string, ReducerBinding>;
+  reducers: ReducerBindings;
   storage: StorageAdapter;
   workingSet: WorkingSet;
   /** This client's identity; `ctx.sender` during prediction. Updated on connect. */
@@ -59,6 +73,8 @@ export interface LocalFirstOptions {
    * if it rejects, nothing is sent until the next `connect()`.
    */
   beforeDrain?: (lf: LocalFirst) => Promise<void> | void;
+  /** Alias the localfirst submodule is mounted under in `schema()`. Default `lf`. */
+  submoduleAlias?: string;
   /** Skip the single-writer storage lock (tests only). */
   skipLock?: boolean;
 }
@@ -96,8 +112,19 @@ interface ReducerEntry {
   name: string;
   wrapped: boolean;
   innerFn: (ctx: any, args: Row) => unknown;
-  serialize: (writer: BinaryWriter, value: Row) => void;
-  deserialize: (reader: BinaryReader) => Row;
+  /** The persisted record product: user args plus intentId and clientTs. */
+  serializeRecord: (writer: BinaryWriter, value: Row) => void;
+  deserializeRecord: (reader: BinaryReader) => Row;
+  /** The full wire product: the record plus the session fields. */
+  serializeWire: (writer: BinaryWriter, value: Row) => void;
+}
+
+const SESSION_PARAMS: readonly string[] = [SESSION_CLIENT_PARAM, SESSION_EPOCH_PARAM];
+
+/** The binding's params type without the session fields; what the log stores. */
+function recordTypeOf(paramsType: any): any {
+  const elements: { name: string }[] = paramsType?.elements ?? [];
+  return { ...paramsType, elements: elements.filter(e => !SESSION_PARAMS.includes(e.name)) };
 }
 
 const hashString = (text: string): string => {
@@ -139,6 +166,12 @@ export class LocalFirst {
   #linkUnsubscribes: (() => void)[] = [];
   #drainReady = false;
   #inflight = new Set<string>();
+  /**
+   * Intents handed to a transport at least once, including on links since
+   * disposed and everything recovered from the log. Their fate is the
+   * server's to decide, so a dependency failure never cancels them.
+   */
+  #everSent = new Set<string>();
   #window: number;
   #settlers = new Map<string, (status: SettledStatus) => void>();
   #listeners = new Set<(event: IntentEvent) => void>();
@@ -152,6 +185,7 @@ export class LocalFirst {
   #workingSetHash: string;
   #accessors: string[];
   #releaseLock: (() => Promise<void>) | null = null;
+  #sessionReducer: string;
 
   private constructor(
     options: LocalFirstOptions,
@@ -177,6 +211,9 @@ export class LocalFirst {
         debounce >= 0 && debounce <= SNAPSHOT_DEBOUNCE_MS_MAX,
         'snapshotDebounceMs out of range'
       );
+    const alias = options.submoduleAlias ?? 'lf';
+    assert(alias.length > 0, 'submoduleAlias must not be empty');
+    this.#sessionReducer = sessionReducerName(alias);
     this.#accessors = store.tableNames.filter(name => store.spec(name).namespace === undefined);
     assert(this.#accessors.length > 0, 'no root tables');
     this.#workingSetHash = hashString(workingSetText(options.workingSet));
@@ -189,27 +226,33 @@ export class LocalFirst {
       if (key === 'default') continue;
       if (typeof value !== 'function') continue;
       const binding = options.reducers[key];
-      if (binding === undefined) continue;
+      if (!isBinding(binding)) continue;
       const wrapped = value[LF_WRAPPED] === true;
       const elements: { name: string }[] = binding.paramsType?.elements ?? [];
-      const hasIntentId = elements.some(element => element.name === INTENT_ID_PARAM);
-      if (wrapped)
-        assert(
-          hasIntentId,
-          `bindings for '${binding.name}' lack '${INTENT_ID_PARAM}'; regenerate them`
-        );
+      const names = elements.map(element => element.name);
+      const hasIntentId = names.includes(INTENT_ID_PARAM);
+      if (wrapped) {
+        for (const param of [INTENT_ID_PARAM, ...SESSION_PARAMS]) {
+          assert(
+            names.includes(param),
+            `bindings for '${binding.name}' lack '${param}'; regenerate them`
+          );
+        }
+      }
       if (!wrapped)
         assert(
           !hasIntentId,
           `bindings for '${binding.name}' have '${INTENT_ID_PARAM}' but the export is not wrapped`
         );
+      const recordType = wrapped ? recordTypeOf(binding.paramsType) : binding.paramsType;
       const entry: ReducerEntry = {
         accessorName: key,
         name: binding.name,
         wrapped,
         innerFn: wrapped ? value[LF_INNER] : value,
-        serialize: ProductType.makeSerializer(binding.paramsType),
-        deserialize: ProductType.makeDeserializer(binding.paramsType),
+        serializeRecord: ProductType.makeSerializer(recordType),
+        deserializeRecord: ProductType.makeDeserializer(recordType),
+        serializeWire: ProductType.makeSerializer(binding.paramsType),
       };
       assert(typeof entry.innerFn === 'function', `reducer '${key}' has no callable body`);
       this.#entries.set(value as AnyReducer, entry);
@@ -243,6 +286,7 @@ export class LocalFirst {
     }
 
     const lf = new LocalFirst(options, store, log, snapshot, releaseLock);
+    for (const key of lf.log.pending.keys()) lf.#everSent.add(key);
     if (loaded !== null) {
       lf.#serverTsMicrosLast = loaded.meta.serverTsMicros;
       for (const [accessor, rows] of loaded.tables) {
@@ -351,7 +395,7 @@ export class LocalFirst {
       ? { ...args, [INTENT_ID_PARAM]: intentId, [CLIENT_TS_PARAM]: clientTs }
       : args;
     const writer = new BinaryWriter(256);
-    entry.serialize(writer, fullArgs);
+    entry.serializeRecord(writer, fullArgs);
     const bytes = writer.getBuffer();
     if (bytes.length > INTENT_ARGS_BYTES_MAX) {
       throw new LocalFirstError(`reducer arguments exceed ${INTENT_ARGS_BYTES_MAX} bytes`);
@@ -394,9 +438,8 @@ export class LocalFirst {
         this.#scheduleSnapshot();
       })
     );
-    this.#drainReady = this.#options.beforeDrain === undefined;
-    if (this.#options.beforeDrain !== undefined) this.#runBeforeDrain(this.#options.beforeDrain);
-    this.#drain();
+    this.#drainReady = false;
+    this.#runBeforeDrain(link);
   }
 
   #onInitialState(tables: Map<string, Row[]>): void {
@@ -409,18 +452,43 @@ export class LocalFirst {
     this.#drain();
   }
 
-  #runBeforeDrain(hook: NonNullable<LocalFirstOptions['beforeDrain']>): void {
+  /** Run the `beforeDrain` hook (if any), then the session handshake; only then send. */
+  #runBeforeDrain(link: Link): void {
     const generation = this.#linkGeneration;
+    const hook = this.#options.beforeDrain;
     Promise.resolve()
-      .then(() => hook(this))
+      .then(() => (hook === undefined ? undefined : hook(this)))
       .then(
         () => {
           if (generation !== this.#linkGeneration) return;
-          this.#drainReady = true;
-          this.#drain();
+          this.#beginSession(link, generation);
         },
         error =>
           console.warn('stdb-localfirst: beforeDrain failed; not sending until next connect', error)
+      );
+  }
+
+  /**
+   * Persist the next session epoch, then announce it to the server. Intents
+   * are sent only after the server has accepted the epoch, so every intent
+   * this link sends carries a session the server already knows; a copy left
+   * behind by an earlier link carries an older epoch and is rejected.
+   */
+  #beginSession(link: Link, generation: number): void {
+    this.log
+      .beginSession(() => uuidV4(this.#rng))
+      .then(session => {
+        if (generation !== this.#linkGeneration) return;
+        return link.transport.callReducer(this.#sessionReducer, encodeSessionArgs(session));
+      })
+      .then(
+        () => {
+          if (generation !== this.#linkGeneration) return;
+          assert(this.log.session !== null, 'handshake acked without a session');
+          this.#drainReady = true;
+          this.#drain();
+        },
+        error => console.warn('stdb-localfirst: session handshake failed; not sending', error)
       );
   }
 
@@ -456,12 +524,31 @@ export class LocalFirst {
     assert(this.#inflight.size <= this.#window, 'inflight exceeds window');
   }
 
+  /** The bytes that go on the wire: the record plus the current session for wrapped reducers. */
+  #wireArgs(record: IntentRecord): Uint8Array {
+    const entry = this.#entriesByAccessor.get(record.accessorName);
+    if (entry === undefined || !entry.wrapped) return record.argsBsatn;
+    const session = this.log.session;
+    assert(session !== null, 'sending an intent without a session');
+    const args = entry.deserializeRecord(new BinaryReader(record.argsBsatn));
+    const writer = new BinaryWriter(record.argsBsatn.length + 32);
+    entry.serializeWire(writer, {
+      ...args,
+      [SESSION_CLIENT_PARAM]: session.clientId,
+      [SESSION_EPOCH_PARAM]: session.epoch,
+    });
+    const bytes = writer.getBuffer();
+    assert(bytes.length > record.argsBsatn.length, 'wire args must carry the session');
+    return bytes;
+  }
+
   #send(link: Link, record: IntentRecord): void {
     const key = idKey(record.intentId);
     this.#inflight.add(key);
+    this.#everSent.add(key);
     const generation = this.#linkGeneration;
     this.#emit({ type: 'sent', intent: record });
-    link.transport.callReducer(record.reducerName, record.argsBsatn).then(
+    link.transport.callReducer(record.reducerName, this.#wireArgs(record)).then(
       () => {
         if (generation !== this.#linkGeneration) return;
         this.#onAcked(record);
@@ -477,6 +564,7 @@ export class LocalFirst {
     const key = idKey(record.intentId);
     assert(!this.log.pending.has(key), 'settling an intent that is still pending');
     this.#inflight.delete(key);
+    this.#everSent.delete(key);
     this.#userArgs.delete(key);
     this.#predictedNow.delete(key);
     const settler = this.#settlers.get(key);
@@ -499,10 +587,14 @@ export class LocalFirst {
   #onFailed(record: IntentRecord, error: unknown): void {
     if (!this.log.pending.has(idKey(record.intentId))) return;
     const ordered = [...this.log.pending.values()];
-    // Dependents already sent are the server's call now; only unsent ones are cancelled.
+    // Only an intent that never left this device can be cancelled: one that was
+    // ever sent may already be applied, so the server decides its fate.
     const dependents = dependentsOf(record, ordered).filter(
-      d => !this.#inflight.has(idKey(d.intentId))
+      d => !this.#everSent.has(idKey(d.intentId))
     );
+    for (const dependent of dependents) {
+      assert(!this.#inflight.has(idKey(dependent.intentId)), 'cancelling an in-flight intent');
+    }
     const message = error instanceof Error ? error.message : String(error);
     this.log.mark(record.intentId, 'failed', message).catch(() => undefined);
     this.#settle(record, 'failed');
@@ -542,7 +634,7 @@ export class LocalFirst {
     const key = idKey(record.intentId);
     const cached = this.#userArgs.get(key);
     if (cached !== undefined) return cached;
-    const full = entry.deserialize(new BinaryReader(record.argsBsatn));
+    const full = entry.deserializeRecord(new BinaryReader(record.argsBsatn));
     const { [INTENT_ID_PARAM]: _intentId, [CLIENT_TS_PARAM]: _clientTs, ...rest } = full;
     const args = entry.wrapped ? rest : full;
     this.#userArgs.set(key, args);

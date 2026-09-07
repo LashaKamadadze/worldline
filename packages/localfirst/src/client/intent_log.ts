@@ -5,7 +5,9 @@ import {
   INTENTS_PENDING_MAX,
   LOG_SLOT_BYTES_COMPACT_AT,
   REDUCER_NAME_CHARS_MAX,
+  SESSION_EPOCH_MAX,
 } from '../shared/limits';
+import type { Session } from '../shared/session';
 import { decodeFrames, encodeFrame } from './framing';
 import type { StorageAdapter } from './storage/adapter';
 
@@ -17,7 +19,11 @@ export interface IntentRecord {
   reducerName: string;
   /** Accessor on the module namespace object, e.g. `createTodo`. */
   accessorName: string;
-  /** BSATN-encoded full argument product (user args + intentId + clientTs). */
+  /**
+   * BSATN-encoded record product (user args + intentId + clientTs). The
+   * session fields are added at send time, since one intent may be sent in
+   * several sessions.
+   */
   argsBsatn: Uint8Array;
   clientTsMicros: bigint;
   /** Whether the local prediction succeeded when the intent was created. */
@@ -30,6 +36,7 @@ const KIND_INTENT = 1;
 const KIND_MARK = 2;
 const KIND_HEADER = 3;
 const KIND_COMMIT = 4;
+const KIND_SESSION = 5;
 const STATUS_CODE: Record<Exclude<IntentStatus, 'pending'>, number> = {
   acked: 1,
   failed: 2,
@@ -70,6 +77,16 @@ function encodeMark(
   return w.getBuffer();
 }
 
+function encodeSession(session: Session): Uint8Array {
+  assert(session.epoch > 0n, 'session epoch must be positive');
+  assert(session.epoch <= SESSION_EPOCH_MAX, 'session epoch above SESSION_EPOCH_MAX');
+  const w = new BinaryWriter(32);
+  w.writeU8(KIND_SESSION);
+  w.writeU128(session.clientId.asBigInt());
+  w.writeU64(session.epoch);
+  return w.getBuffer();
+}
+
 function encodeGen(kind: number, generation: bigint): Uint8Array {
   const w = new BinaryWriter(16);
   w.writeU8(kind);
@@ -80,7 +97,8 @@ function encodeGen(kind: number, generation: bigint): Uint8Array {
 type Decoded =
   | { kind: 'intent'; rec: IntentRecord }
   | { kind: 'mark'; id: Uuid; status: number; message: string }
-  | { kind: 'header' | 'commit'; generation: bigint };
+  | { kind: 'header' | 'commit'; generation: bigint }
+  | { kind: 'session'; session: Session };
 
 function decodeRecord(payload: Uint8Array): Decoded | null {
   const r = new BinaryReader(payload);
@@ -121,6 +139,11 @@ function decodeRecord(payload: Uint8Array): Decoded | null {
   if (kind === KIND_HEADER || kind === KIND_COMMIT) {
     return { kind: kind === KIND_HEADER ? 'header' : 'commit', generation: r.readU64() };
   }
+  if (kind === KIND_SESSION) {
+    const clientId = new Uuid(r.readU128());
+    const epoch = r.readU64();
+    return { kind: 'session', session: { clientId, epoch } };
+  }
   return null;
 }
 
@@ -136,6 +159,8 @@ export interface LogRecovery {
 interface ParsedSlot {
   generation: bigint;
   pending: Map<string, IntentRecord>;
+  /** The last session frame in the slot, or null if the client never began one. */
+  session: Session | null;
   records: number;
   torn: boolean;
   validLength: number;
@@ -144,8 +169,8 @@ interface ParsedSlot {
 /**
  * Append-only, checksummed intent log with two slots.
  *
- * A slot file is `HEADER(gen) INTENT* COMMIT(gen) (INTENT|MARK)*`. Compaction
- * writes a fresh slot (pending intents only) to the *other* file and switches
+ * A slot file is `HEADER(gen) SESSION? INTENT* COMMIT(gen) (INTENT|MARK|SESSION)*`.
+ * Compaction writes a fresh slot (session + pending intents) to the *other* file and switches
  * to it only if that write succeeded, so a torn or failed rewrite can never
  * lose intents that were already reported durable. On open, the valid slot
  * (header + matching commit) with the highest generation wins.
@@ -167,6 +192,8 @@ export class IntentLog {
   #clean = false;
   /** Bytes appended to the active slot since it was written; compaction resets it. */
   #slotBytes = 0;
+  /** The newest session frame known to be durable. */
+  #session: Session | null = null;
 
   private constructor(storage: StorageAdapter, baseName: string) {
     this.#storage = storage;
@@ -189,6 +216,11 @@ export class IntentLog {
     return this.#clean;
   }
 
+  /** The session the next intent is sent in; null until `beginSession()` has resolved once. */
+  get session(): Session | null {
+    return this.#session;
+  }
+
   static async open(storage: StorageAdapter, baseName = 'intents.log'): Promise<IntentLog> {
     const log = new IntentLog(storage, baseName);
     const a = await log.#parseSlot('a');
@@ -209,6 +241,7 @@ export class IntentLog {
       log.#generation = chosen.generation;
       log.#clean = !chosen.torn;
       log.#slotBytes = chosen.validLength;
+      log.#session = chosen.session;
       log.recovery = {
         records: chosen.records,
         torn: chosen.torn,
@@ -237,6 +270,7 @@ export class IntentLog {
     const head = decodeRecord(assertDefined(frames[0], 'frames is non-empty'));
     if (!head || head.kind !== 'header') return null;
     const pending = new Map<string, IntentRecord>();
+    let session: Session | null = null;
     let committed = false;
     for (const f of frames.slice(1)) {
       const d = decodeRecord(f);
@@ -245,9 +279,17 @@ export class IntentLog {
         if (d.generation === head.generation) committed = true;
       } else if (d.kind === 'intent') pending.set(idKey(d.rec.intentId), d.rec);
       else if (d.kind === 'mark') pending.delete(idKey(d.id));
+      else if (d.kind === 'session') session = d.session;
     }
     if (!committed) return null;
-    return { generation: head.generation, pending, records: frames.length, torn, validLength };
+    return {
+      generation: head.generation,
+      pending,
+      session,
+      records: frames.length,
+      torn,
+      validLength,
+    };
   }
 
   /** Serialize all writes so frames land in call order even when awaited concurrently. */
@@ -274,6 +316,27 @@ export class IntentLog {
     this.pending.delete(idKey(id));
     this.#marksSinceCompact++;
     return this.#enqueue(() => this.#appendFrame(encodeFrame(encodeMark(id, status, message))));
+  }
+
+  /**
+   * Open the next session: same client id (or a fresh one from `newClientId`
+   * the first time), epoch one above the last durable one. Resolves once the
+   * frame is durable; until then, and if it rejects, `session` is unchanged
+   * and nothing may be sent under the new epoch.
+   */
+  beginSession(newClientId: () => Uuid): Promise<Session> {
+    return this.#enqueue(async () => {
+      const previous = this.#session;
+      const next: Session = {
+        clientId: previous === null ? newClientId() : previous.clientId,
+        epoch: previous === null ? 1n : previous.epoch + 1n,
+      };
+      assert(next.epoch <= SESSION_EPOCH_MAX, 'session epochs exhausted');
+      await this.#appendFrame(encodeFrame(encodeSession(next)));
+      this.#session = next;
+      assert(previous === null || next.epoch > previous.epoch, 'session epoch must grow');
+      return next;
+    });
   }
 
   async #appendFrame(frame: Uint8Array): Promise<void> {
@@ -305,6 +368,7 @@ export class IntentLog {
     const target: 'a' | 'b' =
       this.#clean || this.#generation > 0n ? (this.#slot === 'a' ? 'b' : 'a') : 'a';
     const parts = [encodeFrame(encodeGen(KIND_HEADER, generation))];
+    if (this.#session !== null) parts.push(encodeFrame(encodeSession(this.#session)));
     for (const r of this.pending.values()) parts.push(encodeFrame(encodeIntent(r)));
     parts.push(encodeFrame(encodeGen(KIND_COMMIT, generation)));
     const total = parts.reduce((n, p) => n + p.length, 0);

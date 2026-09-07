@@ -1,11 +1,13 @@
 import { schema, table, t, ScheduleAt, type ReducerCtx, SenderError } from 'spacetimedb/server';
-import type { Timestamp, TypeBuilder, InferTypeOfParams } from 'spacetimedb';
+import type { Identity, Timestamp, TypeBuilder, InferTypeOfParams, Uuid } from 'spacetimedb';
 import {
   CLIENT_TS_PARAM,
   INTENT_ID_PARAM,
   LF_INNER,
   LF_PARAMS,
   LF_WRAPPED,
+  SESSION_CLIENT_PARAM,
+  SESSION_EPOCH_PARAM,
 } from '../shared/symbols';
 
 /**
@@ -27,6 +29,22 @@ const appliedIntents = table(
   }
 );
 
+/**
+ * One row per client device. `epoch` is the newest session the client has
+ * opened; intents carrying an older epoch are rejected, so a copy left in the
+ * network by a previous connection can never be applied after the client has
+ * already learned its fate on a newer one.
+ */
+const sessions = table(
+  { name: 'sessions' },
+  {
+    clientId: t.uuid().primaryKey(),
+    owner: t.identity(),
+    epoch: t.u64(),
+    lastSeen: t.timestamp(),
+  }
+);
+
 const purgeScheduleRow = t.row({
   scheduledId: t.u64().primaryKey().autoInc(),
   scheduledAt: t.scheduleAt(),
@@ -36,24 +54,65 @@ const purgeScheduleRow = t.row({
 
 const purgeSchedule = table({ name: 'purge_schedule' }, purgeScheduleRow);
 
-const localfirst = schema({ appliedIntents, purgeSchedule });
+const localfirst = schema({ appliedIntents, purgeSchedule, sessions });
 export default localfirst;
 
 export type LocalFirstSchema = typeof localfirst.schemaType;
 export type LocalFirstCtx = ReducerCtx<LocalFirstSchema>;
 
-/** Scheduled reducer: drop dedup markers older than the retention window. */
+/**
+ * Scheduled reducer: drop dedup markers and sessions older than the retention
+ * window. A client that has not opened a session within the window starts a
+ * fresh one on its next connect, which is always accepted.
+ */
 export const purgeAppliedIntents = localfirst.reducer(
   { onSchedule: purgeSchedule },
   { arg: purgeScheduleRow },
   (ctx, { arg }) => {
     const cutoff = ctx.timestamp.microsSinceUnixEpoch - arg.retentionMicros;
-    const stale: any[] = [];
+    const staleIntents: any[] = [];
     for (const row of ctx.db.appliedIntents.iter()) {
-      if (row.appliedAt.microsSinceUnixEpoch < cutoff) stale.push(row);
+      if (row.appliedAt.microsSinceUnixEpoch < cutoff) staleIntents.push(row);
     }
-    for (const row of stale) ctx.db.appliedIntents.delete(row);
+    for (const row of staleIntents) ctx.db.appliedIntents.delete(row);
+    const staleSessions: any[] = [];
+    for (const row of ctx.db.sessions.iter()) {
+      if (row.lastSeen.microsSinceUnixEpoch < cutoff) staleSessions.push(row);
+    }
+    for (const row of staleSessions) ctx.db.sessions.delete(row);
   }
+);
+
+export interface SessionArgs {
+  clientId: Uuid;
+  epoch: bigint;
+}
+
+/**
+ * Open session `epoch` for `clientId` on behalf of `ctx.sender`. Epochs only
+ * move forward, and a client id stays with the identity that first used it.
+ * `ns` is the submodule's table view (`ctx.db` inside the submodule,
+ * `ctx.db.<alias>` from the consumer module).
+ */
+export function beginSessionBody(ns: any, ctx: any, args: SessionArgs): void {
+  const { clientId, epoch } = args;
+  if (epoch <= 0n) throw new SenderError('session epoch must be positive');
+  const row = ns.sessions.clientId.find(clientId);
+  if (row !== null) {
+    if (!(row.owner as Identity).isEqual(ctx.sender)) {
+      throw new SenderError('client id belongs to another identity');
+    }
+    if (epoch <= row.epoch) throw new SenderError('stale session epoch');
+    ns.sessions.clientId.update({ clientId, owner: ctx.sender, epoch, lastSeen: ctx.timestamp });
+    return;
+  }
+  ns.sessions.insert({ clientId, owner: ctx.sender, epoch, lastSeen: ctx.timestamp });
+}
+
+/** Handshake reducer; clients call it as `<alias>.begin_session` before draining. */
+export const beginSession = localfirst.reducer(
+  { clientId: t.uuid(), epoch: t.u64() },
+  (ctx, args) => beginSessionBody(ctx.db, ctx, args)
 );
 
 export const DAY_MICROS = 24n * 60n * 60n * 1_000_000n;
@@ -126,13 +185,23 @@ function withClientTimestamp(ctx: any, clientTimestamp: Timestamp): any {
   });
 }
 
+const RESERVED_PARAMS = [
+  INTENT_ID_PARAM,
+  CLIENT_TS_PARAM,
+  SESSION_CLIENT_PARAM,
+  SESSION_EPOCH_PARAM,
+];
+
 /**
  * Define a reducer that clients may run offline and deliver later.
  *
- * Adds `intentId: uuid` and `clientTs: timestamp` parameters. On the server the
- * wrapper checks `applied_intents` first: a redelivered intent is a silent
- * no-op, which is what a client that never saw the ack needs. The original
- * body is exposed to the client executor for prediction.
+ * Adds `intentId: uuid`, `clientTs: timestamp`, `lfClient: uuid` and
+ * `lfEpoch: u64` parameters. On the server the wrapper checks
+ * `applied_intents` first: a redelivered intent is a silent no-op, which is
+ * what a client that never saw the ack needs. It then requires the session
+ * named by `lfClient`/`lfEpoch` to be the client's current one, so a copy
+ * from an earlier connection cannot run after the client has moved on. The
+ * original body is exposed to the client executor for prediction.
  *
  * Rows created inside must use client-chosen keys (no auto-increment), or the
  * client cannot predict them.
@@ -146,26 +215,36 @@ export function offlineReducer<
   params: P,
   fn: (ctx: OfflineCtx<S>, args: InferTypeOfParams<P>) => void
 ): OfflineReducerExport {
-  if (INTENT_ID_PARAM in params || CLIENT_TS_PARAM in params) {
-    throw new TypeError(
-      `offlineReducer: parameters '${INTENT_ID_PARAM}' and '${CLIENT_TS_PARAM}' are reserved`
-    );
+  for (const reserved of RESERVED_PARAMS) {
+    if (reserved in params) {
+      throw new TypeError(`offlineReducer: parameter '${reserved}' is reserved`);
+    }
   }
   const fullParams = {
     ...params,
     [INTENT_ID_PARAM]: t.uuid(),
     [CLIENT_TS_PARAM]: t.timestamp(),
+    [SESSION_CLIENT_PARAM]: t.uuid(),
+    [SESSION_EPOCH_PARAM]: t.u64(),
   };
   const exp = spacetimedb.reducer(fullParams, (ctx: any, args: any) => {
-    const { [INTENT_ID_PARAM]: intentId, [CLIENT_TS_PARAM]: clientTs, ...rest } = args;
+    const {
+      [INTENT_ID_PARAM]: intentId,
+      [CLIENT_TS_PARAM]: clientTs,
+      [SESSION_CLIENT_PARAM]: lfClient,
+      [SESSION_EPOCH_PARAM]: lfEpoch,
+      ...rest
+    } = args;
     const ns = ctx.db[alias];
-    if (!ns || !ns.appliedIntents) {
+    if (!ns || !ns.appliedIntents || !ns.sessions) {
       const hint = `add \`${alias}: localfirst\` to schema()`;
       throw new Error(`stdb-localfirst: submodule not mounted under '${alias}'; ${hint}`);
     }
     if (ns.appliedIntents.intentId.find(intentId) !== null) {
       return; // already applied: at-least-once delivery collapses to exactly-once
     }
+    const session = ns.sessions.clientId.find(lfClient);
+    if (session === null || session.epoch !== lfEpoch) throw new SenderError('stale session');
     ns.appliedIntents.insert({ intentId, sender: ctx.sender, appliedAt: ctx.timestamp });
     try {
       fn(withClientTimestamp(ctx, clientTs), rest);
@@ -183,4 +262,12 @@ export function offlineReducer<
   return exp as OfflineReducerExport;
 }
 
-export { LF_INNER, LF_WRAPPED, LF_PARAMS, INTENT_ID_PARAM, CLIENT_TS_PARAM };
+export {
+  LF_INNER,
+  LF_WRAPPED,
+  LF_PARAMS,
+  INTENT_ID_PARAM,
+  CLIENT_TS_PARAM,
+  SESSION_CLIENT_PARAM,
+  SESSION_EPOCH_PARAM,
+};

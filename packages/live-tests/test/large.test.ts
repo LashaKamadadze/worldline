@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveServer, waitFor } from '../src/fixture';
 import {
   attach,
+  beginRawSession,
   connect,
   drained,
   localView,
@@ -39,6 +40,7 @@ afterAll(async () => {
 describe(`working set of ${N} rows`, () => {
   it('seeds the server through the SDK', async () => {
     const seed = await connect({ wsUrl: server.wsUrl, db: 'todo-lf' });
+    const session = await beginRawSession(seed.conn);
     const t0 = performance.now();
     const batch = 500;
     for (let i = 0; i < N; i += batch) {
@@ -52,6 +54,7 @@ describe(`working set of ${N} rows`, () => {
             title: `row ${j}`,
             intentId: uuid(),
             clientTs: Timestamp.now(),
+            ...session,
           })
         );
       }
