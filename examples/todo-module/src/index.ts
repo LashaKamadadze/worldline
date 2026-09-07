@@ -1,4 +1,4 @@
-import { schema, table, t } from 'spacetimedb/server';
+import { SenderError, schema, table, t } from 'spacetimedb/server';
 import * as localfirst from 'stdb-localfirst/server';
 import { installPurge, offlineReducer } from 'stdb-localfirst/server';
 
@@ -38,25 +38,22 @@ export const createTodo = offlineReducer(
   'lf',
   { id: t.uuid(), title: t.string() },
   (ctx, { id, title }) => {
-    if (title.trim().length === 0) throw new Error('title must not be empty');
-    ctx.db.todos.insert({
-      id,
-      owner: ctx.sender,
-      title,
-      done: false,
-      createdAt: ctx.clientTimestamp,
-    });
+    // offlineReducer forwards any thrown message to the caller as a SenderError;
+    // checking the key first gives a clearer message than a host unique violation.
+    if (title.trim().length === 0) throw new SenderError('title must not be empty');
+    if (ctx.db.todos.id.find(id) !== null) throw new SenderError('todo already exists');
+    ctx.db.todos.insert({ id, owner: ctx.sender, title, done: false, createdAt: ctx.clientTimestamp });
   }
 );
 
 export const toggleTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid() }, (ctx, { id }) => {
   const row = ctx.db.todos.id.find(id);
-  if (!row) throw new Error('no such todo');
+  if (!row) throw new SenderError('no such todo');
   ctx.db.todos.id.update({ ...row, done: !row.done });
 });
 
 export const deleteTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid() }, (ctx, { id }) => {
-  if (!ctx.db.todos.id.delete(id)) throw new Error('no such todo');
+  if (!ctx.db.todos.id.delete(id)) throw new SenderError('no such todo');
 });
 
 export const bump = offlineReducer(

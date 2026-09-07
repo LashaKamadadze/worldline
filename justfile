@@ -34,3 +34,7 @@ demo:
 
 # Full integration: publish + demo (server must be running)
 integration: publish demo
+
+# Live tests against real, isolated SpacetimeDB servers (random ports, temp dirs; no server needed)
+live-test *args:
+    packages/live-tests/scripts/test.sh {{args}}

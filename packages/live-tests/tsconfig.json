@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "types": ["node"],
+    "paths": {
+      "spacetime:sys@2.0": ["../localfirst/src/sys-shim/index.ts"],
+      "spacetime:sys@2.1": ["../localfirst/src/sys-shim/index.ts"]
+    }
+  },
+  "include": ["src", "test", "generated"]
+}

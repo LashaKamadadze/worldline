@@ -93,6 +93,13 @@ Reads: `lf.db.todos.iter()`, `lf.db.todos.id.find(id)`, or reactive
 4. Await `handle.durable` before telling the user "saved". `handle.settled` resolves with `acked`, `failed` or `cancelled`.
 5. When the server rejects an intent, later unsent intents that read or wrote what it wrote are cancelled and reported through `onIntent`.
 6. Provide `beforeDrain` to refresh an auth token before the queue is sent after a long offline period.
+7. Throw `SenderError` (from `spacetimedb/server`) for every validation failure, and check preconditions such as "key already exists" before `insert`. The V8 host forwards only `SenderError` messages to the client; a plain `Error` or a host error (unique violation raised by `insert`) reaches the client as "The instance encountered a fatal error." with the reason lost, so the rejection notice would be useless to the user.
+
+## Errors and reconnecting, as observed on the real host
+
+- Reducer errors: see rule 7. The local executor treats any throw as a rejection, so predictions match either way; only the message text differs.
+- A raw `DbConnection` does not reconnect by itself. When the socket closes, `onDisconnect` fires once, `isActive` becomes false, and that object never fires `onConnect` again. Rebuild a new connection from the builder (with the saved token so the identity is preserved) with your own backoff, or use the SDK's framework providers, which do this through their `ConnectionManager`. Either way the pattern in "Client side" is right: create the link in `onConnect`, call `lf.disconnect()` in `onDisconnect`. The new connection re-applies the subscription, which replaces the base layer, and pending intents drain against it.
+- Intents in flight when the socket dies are resent by the new connection; `applied_intents` on the host makes the resend a no-op.
 
 ## Durability design
 
@@ -107,7 +114,22 @@ just test            # unit + fake-server end-to-end + 40-seed simulation
 just dst 500 200     # long simulation run
 just server          # local SpacetimeDB
 just integration     # publish example module, generate bindings, run the Node demo
+just live-test       # scenarios against real, isolated SpacetimeDB servers (see below)
 ```
+
+### Live tests (`packages/live-tests`)
+
+Each test file spawns its own `spacetime start` on a random port with a temp
+data dir and a temp CLI root, publishes `examples/todo-module` (built once per
+run), and tears everything down. Private `lf.*` tables are read through the
+HTTP SQL endpoint with the owner token. Scenarios:
+
+- two clients with conflicting offline edits: the host rejects the loser, its unsent dependents are cancelled, both converge;
+- socket killed mid-flight (client disconnect, and server SIGKILL + restart on the same port): every intent takes effect exactly once;
+- what the SDK does on server death (no automatic reconnect on a raw `DbConnection`) and the application-driven reconnect that recovers;
+- a 10,000-row working set: load, snapshot, boot from snapshot, rebase with 200 pending intents, drain timings;
+- a 300-operation differential test of the local `ctx.db` emulation against the real host (outcomes, error text, full tables);
+- purge schedule row, `applied_intents` rows, and identity propagation into predictions and server rows.
 
 The simulation drives one or two clients through random calls, disconnects,
 crashes (restart from the bytes on disk), foreign writes, torn and failed

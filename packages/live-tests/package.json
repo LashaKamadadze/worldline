@@ -1,0 +1,24 @@
+{
+  "name": "live-tests",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Tests stdb-localfirst against a real SpacetimeDB standalone server (Node only)",
+  "scripts": {
+    "generate": "scripts/generate.sh",
+    "pretest": "scripts/generate.sh",
+    "test": "vitest run",
+    "pretypecheck": "scripts/generate.sh",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "spacetimedb": "2.10.0",
+    "stdb-localfirst": "workspace:*",
+    "todo-module": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
