@@ -78,11 +78,15 @@ DbConnection.builder().withUri(URI).withDatabaseName(DB)
   .build();
 ```
 
-The client bundle must alias the host-only import to the shim:
+The client bundle needs one plugin, which aliases the host-only `spacetime:sys@*`
+import to the shim and guards the SDK's `globalThis.window` polyfill that throws
+in browsers:
 
 ```ts
 // vite.config.ts
-resolve: { alias: [{ find: /^spacetime:sys@.*$/, replacement: 'stdb-localfirst/sys-shim' }] }
+import { localfirstVitePlugin } from 'stdb-localfirst/bundler';
+export default { plugins: [localfirstVitePlugin()] };
+// esbuild: plugins: [localfirstEsbuildPlugin()]
 ```
 
 Reads: `lf.db.todos.iter()`, `lf.db.todos.id.find(id)`, or reactive
@@ -158,6 +162,5 @@ a conflicting client, and closing the tab mid-drain. Playwright's Linux WebKit
 has no OPFS, so it runs the sync scenarios with the memory adapter and skips
 reload persistence.
 
-Two things a browser bundle needs (see `packages/browser-tests/harness/bundle.ts`):
-alias `spacetime:sys@*` to the shim, and patch the `globalThis.window = ...`
-line in `spacetimedb/dist/server/index.mjs`, which throws in browsers.
+The page bundle is built with `localfirstEsbuildPlugin()` from
+`stdb-localfirst/bundler`, the same plugin an app uses.

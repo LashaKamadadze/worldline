@@ -35,7 +35,8 @@ export async function opfsRoundTrip(dirName: string): Promise<Record<string, unk
     afterAppend,
     removed,
     binaryOk,
-    syncAccessHandle: typeof (FileSystemFileHandle.prototype as any).createSyncAccessHandle === 'function',
+    syncAccessHandle:
+      typeof (FileSystemFileHandle.prototype as any).createSyncAccessHandle === 'function',
   };
 }
 

@@ -22,6 +22,10 @@
       "types": "./src/sys-shim/index.ts",
       "default": "./src/sys-shim/index.ts"
     },
+    "./bundler": {
+      "types": "./src/bundler/index.ts",
+      "default": "./src/bundler/index.ts"
+    },
     "./testing": {
       "types": "./src/testing/index.ts",
       "default": "./src/testing/index.ts"

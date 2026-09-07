@@ -16,7 +16,10 @@ export interface LocalSpacetime {
   configDir: string;
   process: ChildProcess;
   /** Run a CLI command against this server with an isolated config. */
-  cli(args: string[], opts?: { timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>;
+  cli(
+    args: string[],
+    opts?: { timeoutMs?: number }
+  ): Promise<{ code: number; stdout: string; stderr: string }>;
   sql(db: string, query: string): Promise<string>;
   stop(): Promise<void>;
 }
@@ -82,7 +85,15 @@ export async function startSpacetime(): Promise<LocalSpacetime> {
   const cli = (args: string[], opts?: { timeoutMs?: number }) =>
     run('spacetime', args, env, opts?.timeoutMs);
   // Register the server under a nickname so every command can use `-s local-test`.
-  const add = await cli(['server', 'add', '--url', httpUrl, '--no-fingerprint', '--default', 'local-test']);
+  const add = await cli([
+    'server',
+    'add',
+    '--url',
+    httpUrl,
+    '--no-fingerprint',
+    '--default',
+    'local-test',
+  ]);
   if (add.code !== 0) {
     proc.kill('SIGKILL');
     throw new Error(`spacetime server add failed: ${add.stdout}\n${add.stderr}`);
@@ -118,7 +129,16 @@ export async function publishTodoModule(server: LocalSpacetime, db: string): Pro
   );
   if (pub.code !== 0) throw new Error(`spacetime publish failed:\n${pub.stdout}\n${pub.stderr}`);
   const gen = await server.cli(
-    ['generate', '-y', '--lang', 'typescript', '--out-dir', BINDINGS_DIR, '--module-path', MODULE_PATH],
+    [
+      'generate',
+      '-y',
+      '--lang',
+      'typescript',
+      '--out-dir',
+      BINDINGS_DIR,
+      '--module-path',
+      MODULE_PATH,
+    ],
     { timeoutMs: 300_000 }
   );
   if (gen.code !== 0) throw new Error(`spacetime generate failed:\n${gen.stdout}\n${gen.stderr}`);

@@ -65,11 +65,14 @@ function storageFor(dir: string): StorageAdapter {
 
 (window as any).lfTest = {
   persistence: () => persistence,
-  async open(dir: string, opts: { snapshotDebounceMs?: number | null; inflightWindow?: number } = {}) {
+  async open(
+    dir: string,
+    opts: { snapshotDebounceMs?: number | null; inflightWindow?: number } = {}
+  ) {
     if (lf) throw new Error('already open');
     lf = await LocalFirst.open({
       module: mod as any,
-      reducers: reducers as any,
+      reducers,
       storage: storageFor(dir),
       workingSet,
       snapshotDebounceMs: opts.snapshotDebounceMs ?? 50,
@@ -81,7 +84,10 @@ function storageFor(dir: string): StorageAdapter {
         settledIds.add(`${ev.type}:${ev.intent.intentId.toString()}`);
       }
     });
-    return { pending: lf.pending().length, recovery: { ...lf.log.recovery, generation: lf.log.recovery.generation.toString() } };
+    return {
+      pending: lf.pending().length,
+      recovery: { ...lf.log.recovery, generation: lf.log.recovery.generation.toString() },
+    };
   },
 
   async call(name: string, args: Record<string, string>) {
@@ -139,7 +145,8 @@ function storageFor(dir: string): StorageAdapter {
       const tick = () => {
         if (!lf) return reject(new Error('closed'));
         if (lf.pending().length === 0) return setTimeout(() => resolve(Date.now() - start), 150);
-        if (Date.now() - start > timeoutMs) return reject(new Error(`still pending: ${lf.pending().length}`));
+        if (Date.now() - start > timeoutMs)
+          return reject(new Error(`still pending: ${lf.pending().length}`));
         setTimeout(tick, 50);
       };
       tick();

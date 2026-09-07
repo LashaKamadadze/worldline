@@ -20,7 +20,5 @@ export function plain(value: unknown): unknown {
 }
 
 export function sortedRows(rows: Iterable<unknown>): unknown[] {
-  return [...rows]
-    .map(plain)
-    .sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+  return [...rows].map(plain).sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
 }

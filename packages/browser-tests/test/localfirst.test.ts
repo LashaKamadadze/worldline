@@ -35,7 +35,10 @@ afterAll(async () => {
 
 type Api = {
   open(dir: string, opts?: object): Promise<{ pending: number }>;
-  call(name: string, args: Record<string, string>): Promise<{ intentId: string; predicted: boolean; durable: string }>;
+  call(
+    name: string,
+    args: Record<string, string>
+  ): Promise<{ intentId: string; predicted: boolean; durable: string }>;
   callExpectThrow(name: string, args: Record<string, string>): string | null;
   pending(): string[];
   rows(table: string): unknown[];
@@ -51,13 +54,18 @@ type Api = {
 /** Run a function against `window.lfTest` in the page. */
 function api(page: Page) {
   return <T>(f: (t: Api, arg: any) => T | Promise<T>, arg?: unknown): Promise<T> =>
-    page.evaluate(([src, a]) => new Function('t', 'arg', `return (${src})(t, arg)`)((window as any).lfTest, a), [
-      f.toString(),
-      arg,
-    ] as any) as Promise<T>;
+    page.evaluate(
+      // Page-side eval of a serialized function is the point of this helper.
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      ([src, a]) => new Function('t', 'arg', `return (${src})(t, arg)`)((window as any).lfTest, a),
+      [f.toString(), arg] as any
+    ) as Promise<T>;
 }
 
-async function openApp(browser: Browser, offline: boolean): Promise<{ context: BrowserContext; page: Page }> {
+async function openApp(
+  browser: Browser,
+  offline: boolean
+): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext();
   const page = await context.newPage();
   page.on('pageerror', e => console.error('pageerror', e));
@@ -70,7 +78,13 @@ async function openApp(browser: Browser, offline: boolean): Promise<{ context: B
 async function serverCount(table: string): Promise<number> {
   const out = await stdb.sql(DB, `SELECT * FROM ${table}`);
   // Output is a text table: header, separator, rows.
-  return Math.max(0, out.trim().split('\n').filter(l => l.trim() && !l.startsWith('WARNING')).length - 2);
+  return Math.max(
+    0,
+    out
+      .trim()
+      .split('\n')
+      .filter(l => l.trim() && !l.startsWith('WARNING')).length - 2
+  );
 }
 
 describe('LocalFirst in the browser', () => {
@@ -104,7 +118,9 @@ describe('LocalFirst in the browser', () => {
         return b.browser;
       };
 
-      it('offline calls survive a reload and converge with the server once online', async ({ skip }) => {
+      it('offline calls survive a reload and converge with the server once online', async ({
+        skip,
+      }) => {
         const browser = await needPersistent(skip);
         if (!browser) return;
         const b = { browser };
@@ -122,7 +138,9 @@ describe('LocalFirst in the browser', () => {
           expect(h.predicted).toBe(true);
           expect(h.durable).toBe('ok');
         }
-        expect(await t((t, a) => t.callExpectThrow('createTodo', { id: a, title: 'dup' }), a)).toContain('UniqueAlreadyExists');
+        expect(
+          await t((t, a) => t.callExpectThrow('createTodo', { id: a, title: 'dup' }), a)
+        ).toContain('UniqueAlreadyExists');
         const before = await t(t => t.rows('todos'));
         expect(before).toHaveLength(2);
         expect(await t(t => t.pending())).toHaveLength(4);
@@ -155,7 +173,9 @@ describe('LocalFirst in the browser', () => {
         await context.close();
       });
 
-      it('a conflicting write from another client fails the intent, cancels its dependent, and still converges', async ({ skip }) => {
+      const conflictTitle =
+        'a conflicting write from another client fails the intent, cancels dependents, converges';
+      it(conflictTitle, async ({ skip }) => {
         const b = get();
         if (!b) return skip();
         const shared = randomUUID();
@@ -205,14 +225,19 @@ describe('LocalFirst in the browser', () => {
         for (let i = 0; i < 12; i++) {
           const id = randomUUID();
           ids.push(id);
-          await t((t, a) => t.call('createTodo', { id: a.id, title: a.title }), { id, title: `burst ${i}` });
+          await t((t, a) => t.call('createTodo', { id: a.id, title: a.title }), {
+            id,
+            title: `burst ${i}`,
+          });
           await t((t, name) => t.call('bump', { name, by: '1' }), counter);
         }
         expect(await t(t => t.pending())).toHaveLength(24);
         await context.setOffline(false);
         await t((t, ws) => t.connect(ws, 'todo-lf-browser'), stdb.wsUrl);
         // Let a few acks land, then kill the tab abruptly (no close(), no flush).
-        await page.waitForFunction(() => (window as any).lfTest.settled().length >= 3, null, { timeout: 30_000 });
+        await page.waitForFunction(() => (window as any).lfTest.settled().length >= 3, null, {
+          timeout: 30_000,
+        });
         await page.close({ runBeforeUnload: false });
 
         // Reopen: everything not durably marked acked is resent. Acks seen in
@@ -236,7 +261,10 @@ describe('LocalFirst in the browser', () => {
         expect(counters.find(c => c.name === counter)?.value).toBe('12');
         expect(await t(t => t.rows('todos'))).toEqual(await t(t => t.serverRows('todos')));
         // Independent check through the CLI: the server has exactly 12 of our todos.
-        const sql = await stdb.sql('todo-lf-browser', `SELECT * FROM counters WHERE name = '${counter}'`);
+        const sql = await stdb.sql(
+          'todo-lf-browser',
+          `SELECT * FROM counters WHERE name = '${counter}'`
+        );
         expect(sql).toContain('12');
         expect(await serverCount('todos')).toBeGreaterThanOrEqual(12);
         await t(t => t.close());

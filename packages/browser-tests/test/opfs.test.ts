@@ -55,7 +55,8 @@ describe('OPFS adapter', () => {
           const { context, page } = await openPage(b.browser);
           supported = await page.evaluate(() => (window as any).opfsTest.supported());
           await context.close();
-          if (!supported) console.log(`${name}: navigator.storage.getDirectory is absent; OPFS tests skipped`);
+          if (!supported)
+            console.log(`${name}: navigator.storage.getDirectory is absent; OPFS tests skipped`);
         }
         if (!supported) {
           skip();
@@ -64,7 +65,9 @@ describe('OPFS adapter', () => {
         return b.browser;
       };
 
-      it('reports OPFS support and answers requestPersistence with a boolean within 10s', async ({ skip }) => {
+      it('reports OPFS support and answers requestPersistence with a boolean within 10s', async ({
+        skip,
+      }) => {
         const b = get();
         if (!b) return skip();
         const { context, page } = await openPage(b.browser);
@@ -79,7 +82,9 @@ describe('OPFS adapter', () => {
         await context.close();
       });
 
-      it('main thread: append/read/write/remove round trips and binary safety', async ({ skip }) => {
+      it('main thread: append/read/write/remove round trips and binary safety', async ({
+        skip,
+      }) => {
         const browser = await need(skip);
         if (!browser) return;
         const b = { browser };
@@ -124,11 +129,15 @@ describe('OPFS adapter', () => {
         await page.evaluate(() => (window as any).opfsTest.append('persist', 'f', '+two'));
         await page.reload();
         await page.waitForFunction(() => (window as any).opfsReady === true);
-        expect(await page.evaluate(() => (window as any).opfsTest.read('persist', 'f'))).toBe('one+two');
+        expect(await page.evaluate(() => (window as any).opfsTest.read('persist', 'f'))).toBe(
+          'one+two'
+        );
         await context.close();
       });
 
-      it('IntentLog recovers a torn tail on real OPFS files (main thread and worker)', async ({ skip }) => {
+      it('IntentLog recovers a torn tail on real OPFS files (main thread and worker)', async ({
+        skip,
+      }) => {
         const browser = await need(skip);
         if (!browser) return;
         const b = { browser };
@@ -142,7 +151,10 @@ describe('OPFS adapter', () => {
             afterAppendPending: 2,
             afterAppendTorn: false,
           });
-          expect(r.args).toEqual([[1, 2, 3], [3, 4, 5]]);
+          expect(r.args).toEqual([
+            [1, 2, 3],
+            [3, 4, 5],
+          ]);
         }
         await context.close();
       });

@@ -1,13 +1,9 @@
-// Bundles the demo for Node. The one thing a plain `node` run cannot do is
-// resolve the host-only `spacetime:sys@x.y` import inside `spacetimedb/server`,
-// so a tiny plugin points it at the shim. A browser app does the same with a
-// Vite `resolve.alias`.
+// Bundles the demo for Node. `localfirstEsbuildPlugin` resolves the host-only
+// `spacetime:sys@x.y` import inside `spacetimedb/server` to the shim. A browser
+// app uses `localfirstVitePlugin()` from the same entry point.
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
-
-const shim = fileURLToPath(
-  new URL('../../../packages/localfirst/src/sys-shim/index.ts', import.meta.url)
-);
+import { localfirstEsbuildPlugin } from 'stdb-localfirst/bundler';
 
 await build({
   entryPoints: [fileURLToPath(new URL('../src/demo.ts', import.meta.url))],
@@ -18,12 +14,5 @@ await build({
   target: 'node22',
   sourcemap: true,
   logLevel: 'info',
-  plugins: [
-    {
-      name: 'spacetime-sys-shim',
-      setup(b) {
-        b.onResolve({ filter: /^spacetime:sys@/ }, () => ({ path: shim }));
-      },
-    },
-  ],
+  plugins: [localfirstEsbuildPlugin()],
 });
