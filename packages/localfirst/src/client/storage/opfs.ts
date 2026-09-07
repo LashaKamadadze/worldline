@@ -22,11 +22,24 @@ export class OpfsStorage implements StorageAdapter {
   /**
    * Ask the browser not to evict this origin's storage under disk pressure.
    * Returns whether persistence is granted. Call before relying on the log.
+   *
+   * Firefox answers `persist()` with a permission prompt, and the promise does
+   * not settle until the user reacts (never, in a headless run or a background
+   * tab). Bound the wait so a caller can never hang on it; an unanswered
+   * prompt is reported as "not persisted".
    */
-  static async requestPersistence(): Promise<boolean> {
+  static async requestPersistence(timeoutMs = 5_000): Promise<boolean> {
     if (typeof navigator === 'undefined' || !navigator.storage?.persist) return false;
     if (await navigator.storage.persisted?.()) return true;
-    return navigator.storage.persist();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      return await Promise.race([navigator.storage.persist(), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   static isSupported(): boolean {
