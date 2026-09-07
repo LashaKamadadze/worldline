@@ -1,0 +1,22 @@
+{
+  "name": "todo-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Node demo: offline intents against a real local SpacetimeDB",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "demo": "node scripts/build.mjs && node dist/demo.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "spacetimedb": "2.10.0",
+    "stdb-localfirst": "workspace:*",
+    "todo-module": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
+  }
+}

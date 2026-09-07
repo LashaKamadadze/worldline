@@ -1,0 +1,21 @@
+{
+  "name": "todo-module",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Example SpacetimeDB module using stdb-localfirst",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "spacetime build --module-path .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "spacetimedb": "2.10.0",
+    "stdb-localfirst": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

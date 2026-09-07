@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.direnv/
+.pnpm-home/
+.stdb-data/
+.lf-data/
+examples/todo-client/src/module_bindings/
+*.log
+.DS_Store
