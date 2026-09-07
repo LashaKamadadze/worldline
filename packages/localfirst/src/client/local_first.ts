@@ -146,6 +146,7 @@ export class LocalFirst {
   #predictedNow = new Map<string, boolean>();
   #rebaseScheduled = false;
   #snapshotTimer: unknown = undefined;
+  #snapshotInFlight: Promise<SnapshotMeta> | null = null;
   #serverTsMicrosLast = 0n;
   #closed = false;
   #workingSetHash: string;
@@ -610,10 +611,17 @@ export class LocalFirst {
     assert(!this.#closed, 'snapshotNow() on a closed LocalFirst');
     const tables = new Map<string, Iterable<Row>>();
     for (const accessor of this.#accessors) tables.set(accessor, this.store.baseRows(accessor));
-    return this.#snapshot.save(tables, {
+    if (this.#snapshotInFlight !== null) await this.#snapshotInFlight.catch(() => undefined);
+    const saving = this.#snapshot.save(tables, {
       serverTsMicros: this.#serverTsMicrosLast,
       workingSetHash: this.#workingSetHash,
     });
+    this.#snapshotInFlight = saving;
+    try {
+      return await saving;
+    } finally {
+      if (this.#snapshotInFlight === saving) this.#snapshotInFlight = null;
+    }
   }
 
   async close(): Promise<void> {
@@ -622,6 +630,7 @@ export class LocalFirst {
     const clearTimer = this.#options.clearTimer ?? (handle => clearTimeout(handle as any));
     if (this.#snapshotTimer !== undefined) clearTimer(this.#snapshotTimer);
     this.disconnect();
+    if (this.#snapshotInFlight !== null) await this.#snapshotInFlight.catch(() => undefined);
     await this.log.flush();
     const release = this.#releaseLock;
     this.#releaseLock = null;

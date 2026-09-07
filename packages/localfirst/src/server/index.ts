@@ -1,4 +1,4 @@
-import { schema, table, t, ScheduleAt, type ReducerCtx } from 'spacetimedb/server';
+import { schema, table, t, ScheduleAt, type ReducerCtx, SenderError } from 'spacetimedb/server';
 import type { Timestamp, TypeBuilder, InferTypeOfParams } from 'spacetimedb';
 import {
   CLIENT_TS_PARAM,
@@ -167,7 +167,15 @@ export function offlineReducer<
       return; // already applied: at-least-once delivery collapses to exactly-once
     }
     ns.appliedIntents.insert({ intentId, sender: ctx.sender, appliedAt: ctx.timestamp });
-    fn(withClientTimestamp(ctx, clientTs), rest);
+    try {
+      fn(withClientTimestamp(ctx, clientTs), rest);
+    } catch (error: unknown) {
+      // The V8 host only forwards SenderError messages to the caller; anything
+      // else arrives as "The instance encountered a fatal error". The client
+      // predicted this failure with the same message, so it must see it.
+      if (error instanceof SenderError) throw error;
+      throw new SenderError(error instanceof Error ? error.message : String(error));
+    }
   });
   exp[LF_INNER] = fn;
   exp[LF_WRAPPED] = true;

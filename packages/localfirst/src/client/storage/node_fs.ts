@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { assertStorageName, type StorageAdapter } from './adapter';
 
 const LOCK_FILE = 'LOCK';
+let tempCounter = 0;
 
 /**
  * Plain files on disk. For Node, Bun, Electron and Tauri (via a Node sidecar or
@@ -53,7 +54,10 @@ export class NodeFsStorage implements StorageAdapter {
   async write(name: string, bytes: Uint8Array): Promise<void> {
     await this.#ready;
     const target = this.#path(name);
-    const temp = `${target}.tmp`;
+    // Unique per process and per call: two overlapping writes of the same file
+    // must not race on one temp name (the second rename would hit ENOENT).
+    tempCounter += 1;
+    const temp = `${target}.${process.pid}.${tempCounter}.tmp`;
     const handle = await open(temp, 'w');
     try {
       await handle.write(bytes);
@@ -62,6 +66,18 @@ export class NodeFsStorage implements StorageAdapter {
       await handle.close();
     }
     await rename(temp, target);
+    await this.#syncDirectory();
+  }
+
+  /** Make the rename itself durable. Windows cannot open a directory; skip there. */
+  async #syncDirectory(): Promise<void> {
+    if (process.platform === 'win32') return;
+    const handle = await open(this.#directory, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
 
   async remove(name: string): Promise<void> {
