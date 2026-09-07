@@ -121,3 +121,18 @@ had no server effects, and every client's merged view equals the server's.
 - OPFS adapter is written against the spec but has not been run in a browser here.
 - One process per storage directory; concurrent tabs are not coordinated.
 - Row-level security filters inside submodules are ignored by the host today, so the submodule keeps `applied_intents` private instead.
+
+## Browser tests
+
+`just browser-test` runs `packages/browser-tests` with Playwright browsers from
+nixpkgs (Chromium, Firefox and WebKit, no downloads). It exercises the OPFS
+adapter on the main thread and inside a Worker, persistence across reloads,
+torn-log recovery on real files, and the full engine in a page against a
+throwaway local SpacetimeDB spawned by the test: offline calls, reload, sync,
+a conflicting client, and closing the tab mid-drain. Playwright's Linux WebKit
+has no OPFS, so it runs the sync scenarios with the memory adapter and skips
+reload persistence.
+
+Two things a browser bundle needs (see `packages/browser-tests/harness/bundle.ts`):
+alias `spacetime:sys@*` to the shim, and patch the `globalThis.window = ...`
+line in `spacetimedb/dist/server/index.mjs`, which throws in browsers.

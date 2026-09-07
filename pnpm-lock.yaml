@@ -43,6 +43,34 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/browser-tests:
+    dependencies:
+      spacetimedb:
+        specifier: 2.10.0
+        version: 2.10.0
+      stdb-localfirst:
+        specifier: workspace:*
+        version: link:../localfirst
+      todo-module:
+        specifier: workspace:*
+        version: link:../../examples/todo-module
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.2
+      playwright-core:
+        specifier: 1.61.1
+        version: 1.61.1
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@24.13.3)
+
   packages/localfirst:
     devDependencies:
       '@types/node':
@@ -503,6 +531,11 @@ packages:
   picomatch@4.0.7:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
+
+  playwright-core@1.61.1:
+    resolution: {integrity: sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   postcss@8.5.28:
     resolution: {integrity: sha512-RRuzqDtt5Y9h3quz5hWhK+TPnsmVs6WwSU6LkJMeY4HstUEDuYTG8UJSdawMRzmzAtV+KEoG8N3Qg2qLy5vM/A==}
@@ -986,6 +1019,8 @@ snapshots:
   picocolors@1.1.1: {}
 
   picomatch@4.0.7: {}
+
+  playwright-core@1.61.1: {}
 
   postcss@8.5.28:
     dependencies:

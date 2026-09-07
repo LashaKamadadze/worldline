@@ -34,3 +34,7 @@ demo:
 
 # Full integration: publish + demo (server must be running)
 integration: publish demo
+
+# Headless-browser tests (Playwright from nixpkgs): OPFS adapter + full sync in Chromium/Firefox/WebKit
+browser-test:
+    pnpm --filter browser-tests test

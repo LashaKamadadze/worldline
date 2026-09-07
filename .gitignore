@@ -7,3 +7,5 @@ dist/
 examples/todo-client/src/module_bindings/
 *.log
 .DS_Store
+packages/browser-tests/generated/
+packages/browser-tests/dist/
