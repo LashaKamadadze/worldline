@@ -1,7 +1,20 @@
 import { deepEqual } from 'spacetimedb';
 
-/** Total order over index key scalars, mirroring the host's BTree ordering closely enough for prediction. */
+/** Total order over index key scalars, close enough to the host's BTree order for prediction. */
 export function scalarCompare(a: any, b: any): number {
+  return comparePrimitive(unwrapScalar(a), unwrapScalar(b), a, b);
+}
+
+/** Timestamp, Identity and Uuid compare by their inner integer. */
+function unwrapScalar(value: any): any {
+  if (value === null || typeof value !== 'object') return value;
+  if ('microsSinceUnixEpoch' in value) return value.microsSinceUnixEpoch;
+  if ('__identity__' in value) return value.__identity__;
+  if (typeof value.asBigInt === 'function') return value.asBigInt();
+  return value;
+}
+
+function comparePrimitive(a: any, b: any, rawA: any, rawB: any): number {
   if (a === b) return 0;
   const ta = typeof a;
   const tb = typeof b;
@@ -10,18 +23,9 @@ export function scalarCompare(a: any, b: any): number {
   }
   if (ta === 'string' && tb === 'string') return a < b ? -1 : a > b ? 1 : 0;
   if (ta === 'boolean' && tb === 'boolean') return a === b ? 0 : a ? 1 : -1;
-  if (a && b && typeof a === 'object' && typeof b === 'object') {
-    if (typeof a.compareTo === 'function') return a.compareTo(b);
-    if ('microsSinceUnixEpoch' in a && 'microsSinceUnixEpoch' in b) {
-      return scalarCompare(a.microsSinceUnixEpoch, b.microsSinceUnixEpoch);
-    }
-    if ('__identity__' in a && '__identity__' in b) {
-      return scalarCompare(a.__identity__, b.__identity__);
-    }
-    if (typeof a.asBigInt === 'function' && typeof b.asBigInt === 'function') {
-      return scalarCompare(a.asBigInt(), b.asBigInt());
-    }
-    if (deepEqual(a, b)) return 0;
+  if (rawA && rawB && typeof rawA === 'object' && typeof rawB === 'object') {
+    if (typeof rawA.compareTo === 'function') return rawA.compareTo(rawB);
+    if (deepEqual(rawA, rawB)) return 0;
   }
   const sa = JSON.stringify(a, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   const sb = JSON.stringify(b, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));

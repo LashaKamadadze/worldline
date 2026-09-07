@@ -15,7 +15,12 @@ export interface NetworkPlan {
   dropCall: number;
 }
 
-export const LAN: NetworkPlan = { minLatencyMicros: 1_000n, maxLatencyMicros: 5_000n, dropAck: 0, dropCall: 0 };
+export const LAN: NetworkPlan = {
+  minLatencyMicros: 1_000n,
+  maxLatencyMicros: 5_000n,
+  dropAck: 0,
+  dropCall: 0,
+};
 
 /**
  * One client's connection to the fake server. Mirrors what the SDK gives us:
@@ -42,7 +47,13 @@ export class FakeLink implements Link {
   /** Server->client deliveries are FIFO per session: never reorder, like a socket. */
   #lastDelivery = 0n;
 
-  constructor(server: FakeServer, sched: VirtualScheduler, rng: SeededRng, plan: NetworkPlan, identity: Identity) {
+  constructor(
+    server: FakeServer,
+    sched: VirtualScheduler,
+    rng: SeededRng,
+    plan: NetworkPlan,
+    identity: Identity
+  ) {
     this.#server = server;
     this.#sched = sched;
     this.#rng = rng;

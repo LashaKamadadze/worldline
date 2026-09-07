@@ -1,4 +1,11 @@
 import { BinaryReader, BinaryWriter, Uuid } from 'spacetimedb';
+import { assert, assertDefined } from '../shared/assert';
+import {
+  INTENT_ARGS_BYTES_MAX,
+  INTENTS_PENDING_MAX,
+  LOG_SLOT_BYTES_COMPACT_AT,
+  REDUCER_NAME_CHARS_MAX,
+} from '../shared/limits';
 import { decodeFrames, encodeFrame } from './framing';
 import type { StorageAdapter } from './storage/adapter';
 
@@ -32,6 +39,9 @@ const STATUS_CODE: Record<Exclude<IntentStatus, 'pending'>, number> = {
 export const idKey = (id: Uuid): string => id.toString();
 
 function encodeIntent(rec: IntentRecord): Uint8Array {
+  assert(rec.argsBsatn.length <= INTENT_ARGS_BYTES_MAX, 'intent args exceed INTENT_ARGS_BYTES_MAX');
+  assert(rec.reducerName.length > 0, 'intent has an empty reducer name');
+  assert(rec.reducerName.length <= REDUCER_NAME_CHARS_MAX, 'reducer name too long');
   const w = new BinaryWriter(128 + rec.argsBsatn.length);
   w.writeU8(KIND_INTENT);
   w.writeU128(rec.intentId.asBigInt());
@@ -47,7 +57,11 @@ function encodeIntent(rec: IntentRecord): Uint8Array {
   return w.getBuffer();
 }
 
-function encodeMark(id: Uuid, status: Exclude<IntentStatus, 'pending'>, message: string): Uint8Array {
+function encodeMark(
+  id: Uuid,
+  status: Exclude<IntentStatus, 'pending'>,
+  message: string
+): Uint8Array {
   const w = new BinaryWriter(64 + message.length);
   w.writeU8(KIND_MARK);
   w.writeU128(id.asBigInt());
@@ -86,7 +100,16 @@ function decodeRecord(payload: Uint8Array): Decoded | null {
     for (let i = 0; i < nw; i++) writeSet.push(r.readString());
     return {
       kind: 'intent',
-      rec: { intentId, reducerName, accessorName, argsBsatn, clientTsMicros, predicted, readSet, writeSet },
+      rec: {
+        intentId,
+        reducerName,
+        accessorName,
+        argsBsatn,
+        clientTsMicros,
+        predicted,
+        readSet,
+        writeSet,
+      },
     };
   }
   if (kind === KIND_MARK) {
@@ -142,6 +165,8 @@ export class IntentLog {
   #generation = 0n;
   /** False while the active slot has a torn tail or no slot exists on disk. */
   #clean = false;
+  /** Bytes appended to the active slot since it was written; compaction resets it. */
+  #slotBytes = 0;
 
   private constructor(storage: StorageAdapter, baseName: string) {
     this.#storage = storage;
@@ -175,10 +200,15 @@ export class IntentLog {
       slot = 'b';
     }
     if (chosen) {
+      assert(
+        chosen.pending.size <= INTENTS_PENDING_MAX,
+        'log holds more intents than INTENTS_PENDING_MAX'
+      );
       for (const [k, v] of chosen.pending) log.pending.set(k, v);
       log.#slot = slot;
       log.#generation = chosen.generation;
       log.#clean = !chosen.torn;
+      log.#slotBytes = chosen.validLength;
       log.recovery = {
         records: chosen.records,
         torn: chosen.torn,
@@ -204,7 +234,7 @@ export class IntentLog {
     if (!bytes || bytes.length === 0) return null;
     const { frames, validLength, torn } = decodeFrames(bytes);
     if (!frames.length) return null;
-    const head = decodeRecord(frames[0]);
+    const head = decodeRecord(assertDefined(frames[0], 'frames is non-empty'));
     if (!head || head.kind !== 'header') return null;
     const pending = new Map<string, IntentRecord>();
     let committed = false;
@@ -233,7 +263,10 @@ export class IntentLog {
    * the caller learns via the rejection that it will not survive a restart.
    */
   append(rec: IntentRecord): Promise<void> {
-    this.pending.set(idKey(rec.intentId), rec);
+    const key = idKey(rec.intentId);
+    assert(!this.pending.has(key), `intent ${key} appended twice`);
+    assert(this.pending.size < INTENTS_PENDING_MAX, 'pending intents exceed INTENTS_PENDING_MAX');
+    this.pending.set(key, rec);
     return this.#enqueue(() => this.#appendFrame(encodeFrame(encodeIntent(rec))));
   }
 
@@ -245,8 +278,11 @@ export class IntentLog {
 
   async #appendFrame(frame: Uint8Array): Promise<void> {
     if (!this.#clean) await this.#compactNow();
+    if (this.#slotBytes + frame.length > LOG_SLOT_BYTES_COMPACT_AT) await this.#compactNow();
+    assert(this.#clean, 'appending to a dirty slot');
     try {
       await this.#storage.append(this.#file(this.#slot), frame);
+      this.#slotBytes += frame.length;
     } catch (e) {
       // A failed append may have left a partial frame; anything appended after
       // it would be unreadable. Switch slots before the next write.
@@ -266,7 +302,8 @@ export class IntentLog {
 
   async #compactNow(): Promise<void> {
     const generation = this.#generation + 1n;
-    const target: 'a' | 'b' = this.#clean || this.#generation > 0n ? (this.#slot === 'a' ? 'b' : 'a') : 'a';
+    const target: 'a' | 'b' =
+      this.#clean || this.#generation > 0n ? (this.#slot === 'a' ? 'b' : 'a') : 'a';
     const parts = [encodeFrame(encodeGen(KIND_HEADER, generation))];
     for (const r of this.pending.values()) parts.push(encodeFrame(encodeIntent(r)));
     parts.push(encodeFrame(encodeGen(KIND_COMMIT, generation)));
@@ -283,7 +320,9 @@ export class IntentLog {
     this.#slot = target;
     this.#generation = generation;
     this.#clean = true;
+    this.#slotBytes = out.length;
     this.#marksSinceCompact = 0;
+    assert(this.#generation > 0n, 'generation must be positive after compaction');
     if (old !== target) {
       await this.#storage.remove(this.#file(old)).catch(() => undefined);
     }
@@ -291,6 +330,9 @@ export class IntentLog {
 
   /** Wait for every queued write to settle (test helper). */
   flush(): Promise<void> {
-    return this.#queue.then(() => undefined, () => undefined);
+    return this.#queue.then(
+      () => undefined,
+      () => undefined
+    );
   }
 }

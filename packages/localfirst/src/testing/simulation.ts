@@ -1,6 +1,13 @@
 import { BinaryWriter, Identity, ProductType, Timestamp, Uuid, deepEqual } from 'spacetimedb';
-import { LocalFirst, type CallHandle, type IntentEvent } from '../client/local_first';
+import { assert } from '../shared/assert';
+import {
+  LocalFirst,
+  type AnyReducer,
+  type CallHandle,
+  type IntentEvent,
+} from '../client/local_first';
 import { idKey } from '../client/intent_log';
+import { LocalFirstError } from '../client/errors';
 import { SeededRng } from '../client/rng';
 import { bindingsFromModule } from './bindings';
 import { FakeServer } from './fake_server';
@@ -10,6 +17,23 @@ import { VirtualScheduler } from './scheduler';
 import * as sampleModule from './sample_module';
 import * as localfirst from '../server/index';
 
+/**
+ * Deterministic simulation of one to N local-first clients against a fake host.
+ *
+ * Goal: for a seed, drive random user actions, disconnects, crashes, foreign
+ * writes, storage faults (failed and torn appends/writes, failed reads), lost
+ * calls and lost acks, clock skew, throwing listeners, re-entrant calls and
+ * double opens, then bring everything online and check the invariants below.
+ * Same seed, same trace, same report, so any failure is a replayable bug.
+ *
+ * Invariants:
+ *  1. Every intent reported durable settles exactly once (acked/failed/cancelled).
+ *  2. An intent acked on the client is applied on the server.
+ *  3. An intent failed or cancelled on the client has no effects on the server.
+ *  4. No intent has effects more than once on the server (dedup).
+ *  5. After quiescence each client's merged view equals the server's tables.
+ *  6. After a crash, every durable unsettled intent is still pending.
+ */
 export interface SimOptions {
   seed: number;
   steps?: number;
@@ -21,7 +45,16 @@ export interface SimOptions {
   trace?: boolean;
 }
 
-type Action = 'call' | 'toggleLink' | 'crash' | 'foreign' | 'snapshot' | 'tick' | 'restartServerlessTick';
+type Action =
+  | 'call'
+  | 'toggleLink'
+  | 'crash'
+  | 'foreign'
+  | 'snapshot'
+  | 'tick'
+  | 'skewClock'
+  | 'doubleOpen'
+  | 'reentrantCall';
 
 export interface SimReport {
   seed: number;
@@ -33,6 +66,7 @@ export interface SimReport {
   cancelled: number;
   volatile: number;
   crashes: number;
+  openRetries: number;
   tornRecoveries: number;
   faults: FaultyStorage['stats'];
   serverExecutions: number;
@@ -54,8 +88,11 @@ class SimClient {
   ledger = new Map<string, Ledger>();
   known: Uuid[] = [];
   crashes = 0;
+  openRetries = 0;
   tornRecoveries = 0;
   wantConnected = false;
+  hookFails = false;
+  partialTodos = false;
   unsubEvents: (() => void) | null = null;
 
   constructor(storage: FaultyStorage, identity: Identity) {
@@ -65,301 +102,461 @@ class SimClient {
 }
 
 const DEFAULT_WEIGHTS: Record<Action, number> = {
-  call: 45,
+  call: 40,
   toggleLink: 10,
   crash: 5,
   foreign: 12,
   snapshot: 4,
-  tick: 28,
-  restartServerlessTick: 0,
+  tick: 24,
+  skewClock: 2,
+  doubleOpen: 1,
+  reentrantCall: 2,
 };
 
+const OPEN_RETRIES_MAX = 8;
+const QUIESCE_ROUNDS_MAX = 200;
+const VIOLATIONS_MAX = 20;
+
 export async function runSimulation(opts: SimOptions): Promise<SimReport> {
-  const rng = new SeededRng(opts.seed);
-  const sched = new VirtualScheduler();
-  sched.timeMicros = 1_700_000_000_000_000n;
-  const clock = () => sched.timeMicros;
-  const faults: FaultPlan = { ...NO_FAULTS, ...opts.faults };
-  const network: NetworkPlan = { ...LAN, ...opts.network };
-  const weights = { ...DEFAULT_WEIGHTS, ...opts.weights };
-  const steps = opts.steps ?? 200;
-  const nClients = opts.clients ?? 1;
-  const violations: string[] = [];
-  const trace = (msg: string) => {
-    if (opts.trace) console.log(`[t=${sched.timeMicros}] ${msg}`);
-  };
+  const sim = new Simulation(opts);
+  await sim.setup();
+  await sim.run();
+  await sim.quiesce();
+  sim.checkInvariants();
+  return sim.report();
+}
 
-  const mod = sampleModule as Record<string, any>;
-  const bindings = bindingsFromModule(mod);
-  const server = new FakeServer(mod, bindings, { lf: localfirst }, clock, new SeededRng(opts.seed ^ 0x5eed));
-  // Foreign writers (other users) share the server but have no local-first client.
-  const foreignIdentity = new Identity(0xf0f0f0n);
+class Simulation {
+  readonly opts: SimOptions;
+  readonly rng: SeededRng;
+  readonly sched = new VirtualScheduler();
+  readonly faults: FaultPlan;
+  readonly network: NetworkPlan;
+  readonly weights: Record<Action, number>;
+  readonly steps: number;
+  readonly violations: string[] = [];
+  readonly mod = sampleModule as Record<string, any>;
+  readonly bindings = bindingsFromModule(this.mod);
+  readonly server: FakeServer;
+  readonly clients: SimClient[] = [];
+  readonly foreignIdentity = new Identity(0xf0f0f0n);
+  readonly stats = { calls: 0, localRejects: 0, acked: 0, failed: 0, cancelled: 0 };
+  readonly clock = (): bigint => this.sched.timeMicros;
 
-  const clients: SimClient[] = [];
-  const stats = { calls: 0, localRejects: 0, acked: 0, failed: 0, cancelled: 0 };
-
-  const attachEvents = (c: SimClient) => {
-    c.unsubEvents?.();
-    c.unsubEvents = c.lf.onIntent((ev: IntentEvent) => {
-      if (ev.type === 'acked' || ev.type === 'failed' || ev.type === 'cancelled') {
-        const key = idKey(ev.intent.intentId);
-        const l = c.ledger.get(key);
-        if (l) {
-          if (l.status && l.status !== ev.type) violations.push(`intent ${key} settled twice: ${l.status} then ${ev.type}`);
-          l.status = ev.type;
-        }
-        stats[ev.type]++;
-      }
-    });
-  };
-
-  const openClient = async (c: SimClient) => {
-    c.lf = await LocalFirst.open({
-      module: mod,
-      reducers: bindings,
-      storage: c.storage,
-      workingSet: { queries: ['SELECT * FROM todos', 'SELECT * FROM counters'] },
-      identity: c.identity,
-      clock,
-      rng: new SeededRng(rng.u32()),
-      inflightWindow: rng.pick([1, 1, 1, 2, 4]),
-      snapshotDebounceMs: null,
-      compactEvery: rng.pick([1, 4, 64]),
-    });
-    if (c.lf.log.recovery.torn) c.tornRecoveries++;
-    attachEvents(c);
-    c.link = new FakeLink(server, sched, new SeededRng(rng.u32()), network, c.identity);
-    if (c.wantConnected) {
-      c.link.connect();
-      c.lf.connect(c.link);
-    }
-  };
-
-  for (let i = 0; i < nClients; i++) {
-    const c = new SimClient(new FaultyStorage(new SeededRng(rng.u32()), faults), new Identity(BigInt(1000 + i)));
-    c.wantConnected = rng.chance(0.5);
-    await openClient(c);
-    clients.push(c);
+  constructor(opts: SimOptions) {
+    this.opts = opts;
+    this.rng = new SeededRng(opts.seed);
+    this.sched.timeMicros = 1_700_000_000_000_000n;
+    this.faults = { ...NO_FAULTS, ...opts.faults };
+    this.network = { ...LAN, ...opts.network };
+    this.weights = { ...DEFAULT_WEIGHTS, ...opts.weights };
+    this.steps = opts.steps ?? 200;
+    const serverRng = new SeededRng(opts.seed ^ 0x5eed);
+    this.server = new FakeServer(
+      this.mod,
+      this.bindings,
+      { lf: localfirst },
+      this.clock,
+      serverRng
+    );
   }
 
-  const pickAction = (): Action => {
-    const total = Object.values(weights).reduce((a, b) => a + b, 0);
-    let r = rng.float() * total;
-    for (const [a, w] of Object.entries(weights) as [Action, number][]) {
-      if ((r -= w) < 0) return a;
+  trace(message: string): void {
+    if (this.opts.trace) console.log(`[t=${this.sched.timeMicros}] ${message}`);
+  }
+
+  // ------------------------------------------------------------- lifecycle
+
+  async setup(): Promise<void> {
+    const count = this.opts.clients ?? 1;
+    for (let i = 0; i < count; i++) {
+      const storage = new FaultyStorage(new SeededRng(this.rng.u32()), this.faults);
+      const client = new SimClient(storage, new Identity(BigInt(1000 + i)));
+      client.wantConnected = this.rng.chance(0.5);
+      client.hookFails = this.rng.chance(0.3);
+      client.partialTodos = this.rng.chance(0.25);
+      await this.openClient(client);
+      this.clients.push(client);
+    }
+  }
+
+  /** Open with retries: a failed read at open is a transient error the app would retry. */
+  async openClient(client: SimClient): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        client.lf = await this.tryOpen(client);
+        break;
+      } catch (error) {
+        client.openRetries += 1;
+        if (attempt + 1 >= OPEN_RETRIES_MAX) {
+          this.violations.push(`client ${client.identity} could not open: ${String(error)}`);
+          client.storage.plan = NO_FAULTS;
+          client.lf = await this.tryOpen(client);
+          break;
+        }
+      }
+    }
+    if (client.lf.log.recovery.torn) client.tornRecoveries += 1;
+    this.attachEvents(client);
+    const linkRng = new SeededRng(this.rng.u32());
+    client.link = new FakeLink(this.server, this.sched, linkRng, this.network, client.identity);
+    if (client.wantConnected) {
+      client.link.connect();
+      client.lf.connect(client.link);
+    }
+  }
+
+  tryOpen(client: SimClient): Promise<LocalFirst> {
+    return LocalFirst.open({
+      module: this.mod,
+      reducers: this.bindings,
+      storage: client.storage,
+      workingSet: {
+        queries: ['SELECT * FROM todos', 'SELECT * FROM counters'],
+        coverage: client.partialTodos ? { todos: 'partial' } : {},
+      },
+      identity: client.identity,
+      clock: this.clock,
+      rng: new SeededRng(this.rng.u32()),
+      inflightWindow: this.rng.pick([1, 1, 1, 2, 4]),
+      snapshotDebounceMs: null,
+      compactEvery: this.rng.pick([1, 4, 64]),
+      beforeDrain: client.hookFails
+        ? () => {
+            if (this.rng.chance(0.5)) throw new Error('token refresh failed');
+          }
+        : undefined,
+    });
+  }
+
+  attachEvents(client: SimClient): void {
+    client.unsubEvents?.();
+    const throwing = this.rng.chance(0.3);
+    if (throwing) {
+      client.lf.onIntent(() => {
+        throw new Error('listener bug');
+      });
+      client.lf.subscribe(() => {
+        throw new Error('subscriber bug');
+      });
+    }
+    client.unsubEvents = client.lf.onIntent((event: IntentEvent) => this.onIntent(client, event));
+  }
+
+  onIntent(client: SimClient, event: IntentEvent): void {
+    if (event.type !== 'acked' && event.type !== 'failed' && event.type !== 'cancelled') return;
+    const key = idKey(event.intent.intentId);
+    const entry = client.ledger.get(key);
+    if (entry !== undefined) {
+      if (entry.status !== undefined && entry.status !== event.type) {
+        this.violations.push(`intent ${key} settled twice: ${entry.status} then ${event.type}`);
+      }
+      entry.status = event.type;
+    }
+    this.stats[event.type] += 1;
+  }
+
+  // ------------------------------------------------------------------ run
+
+  async run(): Promise<void> {
+    for (let step = 0; step < this.steps; step++) {
+      const client = this.rng.pick(this.clients);
+      await this.dispatch(client, this.pickAction());
+      if (this.violations.length > VIOLATIONS_MAX) break;
+    }
+  }
+
+  pickAction(): Action {
+    const total = Object.values(this.weights).reduce((a, b) => a + b, 0);
+    let roll = this.rng.float() * total;
+    for (const [action, weight] of Object.entries(this.weights) as [Action, number][]) {
+      roll -= weight;
+      if (roll < 0) return action;
     }
     return 'tick';
-  };
+  }
 
-  const doCall = (c: SimClient) => {
-    const kind = rng.pick(['create', 'create', 'toggle', 'delete', 'bump'] as const);
-    let reducer: Function;
-    let args: Record<string, any>;
-    if (kind === 'create') {
-      const id = Uuid.fromRandomBytesV4(rng.fill(new Uint8Array(16)));
-      reducer = mod.createTodo;
-      args = { id, title: rng.chance(0.05) ? '' : `todo-${rng.u32() % 1000}` };
-      c.known.push(id);
-    } else if (kind === 'bump') {
-      reducer = mod.bump;
-      args = { name: rng.pick(['a', 'b', 'c']), by: BigInt(rng.int(-3, 5)) };
-    } else {
-      const id = c.known.length && !rng.chance(0.1) ? rng.pick(c.known) : Uuid.fromRandomBytesV4(rng.fill(new Uint8Array(16)));
-      reducer = kind === 'toggle' ? mod.toggleTodo : mod.deleteTodo;
-      args = { id };
-    }
-    let handle: CallHandle;
-    try {
-      handle = c.lf.call(reducer, args);
-    } catch (e) {
-      stats.localRejects++;
-      trace(`client ${c.identity} local reject ${kind}: ${(e as Error).message}`);
-      return;
-    }
-    stats.calls++;
-    const key = idKey(handle.intentId);
-    const l: Ledger = { durable: 'pending', predicted: handle.predicted };
-    c.ledger.set(key, l);
-    handle.durable.then(
-      () => {
-        l.durable = 'ok';
-      },
-      () => {
-        l.durable = 'rejected';
-      }
-    );
-    trace(`client ${c.identity} call ${kind} -> ${key} predicted=${handle.predicted}`);
-  };
-
-  const doCrash = async (c: SimClient) => {
-    // What survives: only what the storage adapter reported durable.
-    const durableUnsettled = new Set<string>();
-    for (const [k, l] of c.ledger) if (l.durable === 'ok' && !l.status) durableUnsettled.add(k);
-    const inLogBefore = new Set(c.lf.pending().map(r => idKey(r.intentId)));
-    await c.lf.close();
-    c.link.dispose();
-    c.storage = c.storage.crash();
-    c.crashes++;
-    trace(`client ${c.identity} CRASH`);
-    await openClient(c);
-    const after = new Set(c.lf.pending().map(r => idKey(r.intentId)));
-    for (const k of durableUnsettled) {
-      if (!after.has(k)) violations.push(`intent ${k} was reported durable but vanished after crash`);
-    }
-    for (const k of after) {
-      const l = c.ledger.get(k);
-      if (!l) {
-        violations.push(`intent ${k} appeared after crash but was never issued`);
-        continue;
-      }
-      if (l.status) {
-        // Its mark append failed before the crash; it will be resent and dedup'd on the server.
-        l.status = undefined;
-      }
-    }
-    void inLogBefore;
-    // Volatile intents (durable rejected) are gone by contract.
-    for (const [k, l] of c.ledger) if (l.durable === 'rejected' && !l.status && !after.has(k)) l.status = undefined;
-  };
-
-  const doForeign = () => {
-    const kind = rng.pick(['create', 'toggle', 'delete', 'bump'] as const);
-    const tables = server.snapshot();
-    const todos = tables.get('todos') ?? [];
-    const args: Record<string, any> = {};
-    let accessor: string;
-    if (kind === 'create' || !todos.length) {
-      accessor = 'createTodo';
-      args.id = Uuid.fromRandomBytesV4(rng.fill(new Uint8Array(16)));
-      args.title = `foreign-${rng.u32() % 1000}`;
-    } else if (kind === 'bump') {
-      accessor = 'bump';
-      args.name = rng.pick(['a', 'b', 'c']);
-      args.by = BigInt(rng.int(1, 3));
-    } else {
-      accessor = kind === 'toggle' ? 'toggleTodo' : 'deleteTodo';
-      args.id = rng.pick(todos).id;
-    }
-    const b = bindings[accessor];
-    const w = new BinaryWriter(256);
-    ProductType.makeSerializer(b.paramsType)(w, {
-      ...args,
-      intentId: Uuid.fromRandomBytesV4(rng.fill(new Uint8Array(16))),
-      clientTs: new Timestamp(clock()),
-    });
-    const res = server.call(b.name, w.getBuffer(), foreignIdentity);
-    trace(`foreign ${accessor} ok=${res.ok}`);
-  };
-
-  for (let step = 0; step < steps; step++) {
-    const c = rng.pick(clients);
-    const action = pickAction();
+  /** All control flow in one place; the action methods are straight-line. */
+  async dispatch(client: SimClient, action: Action): Promise<void> {
     switch (action) {
       case 'call':
-        doCall(c);
-        break;
+        this.actionCall(client, false);
+        return;
+      case 'reentrantCall':
+        this.actionReentrantCall(client);
+        return;
       case 'toggleLink':
-        if (c.link.connected) {
-          c.lf.disconnect();
-          c.link.disconnect();
-          c.wantConnected = false;
-          trace(`client ${c.identity} offline`);
-        } else {
-          c.link.connect();
-          c.lf.connect(c.link);
-          c.wantConnected = true;
-          trace(`client ${c.identity} online`);
-        }
-        break;
+        this.actionToggleLink(client);
+        return;
       case 'crash':
-        await doCrash(c);
-        break;
+        await this.actionCrash(client);
+        return;
       case 'foreign':
-        doForeign();
-        break;
+        this.actionForeign();
+        return;
       case 'snapshot':
-        await c.lf.snapshotNow().catch(() => undefined);
-        break;
+        await client.lf.snapshotNow().catch(() => undefined);
+        return;
+      case 'skewClock':
+        this.sched.timeMicros -= BigInt(this.rng.int(1, 500)) * 1_000n;
+        return;
+      case 'doubleOpen':
+        await this.actionDoubleOpen(client);
+        return;
       case 'tick':
-      default:
-        await sched.runFor(BigInt(rng.int(1, 50)) * 1_000n);
-        break;
+        await this.sched.runFor(BigInt(this.rng.int(1, 50)) * 1_000n);
+        return;
     }
-    if (violations.length > 20) break;
   }
 
-  // ---- Quiescence: everyone online, no faults, drain everything ----
-  for (const c of clients) c.storage.plan = NO_FAULTS;
-  const quietNetwork: NetworkPlan = { ...network, dropAck: 0, dropCall: 0 };
-  for (const c of clients) {
-    if (c.link.connected) {
-      c.lf.disconnect();
-      c.link.disconnect();
-    }
-    c.link = new FakeLink(server, sched, new SeededRng(rng.u32()), quietNetwork, c.identity);
-    c.link.connect();
-    c.lf.connect(c.link);
-    c.wantConnected = true;
-  }
-  for (let i = 0; i < 200; i++) {
-    await sched.runUntilIdle();
-    if (clients.every(c => c.lf.pending().length === 0)) break;
-    await sched.runFor(100_000n);
-  }
-  await sched.runFor(1_000_000n);
+  // -------------------------------------------------------------- actions
 
-  // ---- Invariants ----
-  for (const c of clients) {
-    if (c.lf.pending().length) violations.push(`client ${c.identity} still has ${c.lf.pending().length} pending after quiescence`);
-    for (const [k, l] of c.ledger) {
-      if (l.durable === 'ok' && !l.status) violations.push(`durable intent ${k} never settled`);
-      if (l.status === 'acked' && !server.isApplied(new Uuid(BigInt('0x' + k.replace(/-/g, ''))))) {
-        violations.push(`intent ${k} acked on client but not applied on server`);
-      }
-      if (l.status === 'failed' && server.effectRuns.get(k)) {
-        violations.push(`intent ${k} failed on client but had effects on server`);
-      }
+  randomCall(client: SimClient): { reducer: AnyReducer; args: Record<string, any>; kind: string } {
+    const kind = this.rng.pick(['create', 'create', 'toggle', 'delete', 'bump'] as const);
+    if (kind === 'create') {
+      const id = Uuid.fromRandomBytesV4(this.rng.fill(new Uint8Array(16)));
+      client.known.push(id);
+      const title = this.rng.chance(0.05) ? '' : `todo-${this.rng.u32() % 1000}`;
+      return { reducer: this.mod.createTodo, args: { id, title }, kind };
     }
-    const view = new Map<string, Map<string, any>>();
-    for (const [acc, rows] of server.snapshot()) {
-      const spec = c.lf.store.spec(acc);
-      view.set(acc, new Map(rows.map(r => [String(spec.rowKey(r)), r])));
-      const local = new Map([...c.lf.db[acc].iter()].map((r: any) => [String(spec.rowKey(r)), r]));
-      if (local.size !== rows.length) {
-        violations.push(`client ${c.identity} ${acc}: ${local.size} rows locally vs ${rows.length} on server`);
+    if (kind === 'bump') {
+      const args = { name: this.rng.pick(['a', 'b', 'c']), by: BigInt(this.rng.int(-3, 5)) };
+      return { reducer: this.mod.bump, args, kind };
+    }
+    const useKnown = client.known.length > 0 && !this.rng.chance(0.1);
+    const id = useKnown
+      ? this.rng.pick(client.known)
+      : Uuid.fromRandomBytesV4(this.rng.fill(new Uint8Array(16)));
+    const reducer = kind === 'toggle' ? this.mod.toggleTodo : this.mod.deleteTodo;
+    return { reducer, args: { id }, kind };
+  }
+
+  actionCall(client: SimClient, strict: boolean): void {
+    const { reducer, args, kind } = this.randomCall(client);
+    let handle: CallHandle;
+    try {
+      handle = client.lf.call(reducer, args, { strict });
+    } catch (error) {
+      this.stats.localRejects += 1;
+      this.trace(`client ${client.identity} local reject ${kind}: ${(error as Error).message}`);
+      return;
+    }
+    this.stats.calls += 1;
+    const key = idKey(handle.intentId);
+    const entry: Ledger = { durable: 'pending', predicted: handle.predicted };
+    client.ledger.set(key, entry);
+    handle.durable.then(
+      () => {
+        entry.durable = 'ok';
+      },
+      () => {
+        entry.durable = 'rejected';
+      }
+    );
+    this.trace(`client ${client.identity} call ${kind} -> ${key} predicted=${handle.predicted}`);
+  }
+
+  /** A UI subscriber that issues a call from inside a change notification. */
+  actionReentrantCall(client: SimClient): void {
+    let fired = false;
+    const unsubscribe = client.lf.subscribe(() => {
+      if (fired) return;
+      fired = true;
+      this.actionCall(client, this.rng.chance(0.3));
+    });
+    this.actionCall(client, false);
+    unsubscribe();
+  }
+
+  actionToggleLink(client: SimClient): void {
+    if (client.link.connected) {
+      client.lf.disconnect();
+      client.link.disconnect();
+      client.wantConnected = false;
+      this.trace(`client ${client.identity} offline`);
+      return;
+    }
+    client.link.connect();
+    client.lf.connect(client.link);
+    client.wantConnected = true;
+    this.trace(`client ${client.identity} online`);
+  }
+
+  async actionCrash(client: SimClient): Promise<void> {
+    const durableUnsettled = new Set<string>();
+    for (const [key, entry] of client.ledger) {
+      if (entry.durable === 'ok' && entry.status === undefined) durableUnsettled.add(key);
+    }
+    await client.lf.close();
+    client.link.dispose();
+    client.storage = client.storage.crash();
+    client.crashes += 1;
+    this.trace(`client ${client.identity} CRASH`);
+    await this.openClient(client);
+    const after = new Set(client.lf.pending().map(record => idKey(record.intentId)));
+    for (const key of durableUnsettled) {
+      if (!after.has(key))
+        this.violations.push(`intent ${key} reported durable but vanished after crash`);
+    }
+    for (const key of after) {
+      const entry = client.ledger.get(key);
+      if (entry === undefined) {
+        this.violations.push(`intent ${key} appeared after crash but was never issued`);
         continue;
       }
-      for (const [k, r] of local) {
-        const s = view.get(acc)!.get(k);
-        if (!s || !deepEqual(s, r)) violations.push(`client ${c.identity} ${acc} row ${k} differs from server`);
+      // Its mark append failed before the crash; it will be resent and dedup'd on the server.
+      entry.status = undefined;
+    }
+  }
+
+  actionForeign(): void {
+    const kind = this.rng.pick(['create', 'toggle', 'delete', 'bump'] as const);
+    const todos = this.server.snapshot().get('todos') ?? [];
+    const args: Record<string, any> = {};
+    let accessor: string;
+    if (kind === 'create' || todos.length === 0) {
+      accessor = 'createTodo';
+      args.id = Uuid.fromRandomBytesV4(this.rng.fill(new Uint8Array(16)));
+      args.title = `foreign-${this.rng.u32() % 1000}`;
+    } else if (kind === 'bump') {
+      accessor = 'bump';
+      args.name = this.rng.pick(['a', 'b', 'c']);
+      args.by = BigInt(this.rng.int(1, 3));
+    } else {
+      accessor = kind === 'toggle' ? 'toggleTodo' : 'deleteTodo';
+      args.id = this.rng.pick(todos).id;
+    }
+    const binding = this.bindings[accessor];
+    assert(binding !== undefined, `no binding for ${accessor}`);
+    const writer = new BinaryWriter(256);
+    ProductType.makeSerializer(binding.paramsType)(writer, {
+      ...args,
+      intentId: Uuid.fromRandomBytesV4(this.rng.fill(new Uint8Array(16))),
+      clientTs: new Timestamp(this.clock()),
+    });
+    const result = this.server.call(binding.name, writer.getBuffer(), this.foreignIdentity);
+    this.trace(`foreign ${accessor} ok=${result.ok}`);
+  }
+
+  /** A second instance on the same storage must be refused by the single-writer lock. */
+  async actionDoubleOpen(client: SimClient): Promise<void> {
+    try {
+      const second = await this.tryOpen(client);
+      await second.close();
+      this.violations.push(`client ${client.identity}: second open on locked storage succeeded`);
+    } catch (error) {
+      if (!(error instanceof LocalFirstError)) {
+        this.violations.push(`double open failed with the wrong error: ${String(error)}`);
       }
     }
   }
-  for (const [k, n] of server.effectRuns) {
-    if (n > 1) violations.push(`intent ${k} had effects ${n} times on server`);
+
+  // ------------------------------------------------------------ quiescence
+
+  async quiesce(): Promise<void> {
+    const quietNetwork: NetworkPlan = { ...this.network, dropAck: 0, dropCall: 0 };
+    for (const client of this.clients) {
+      client.storage.plan = NO_FAULTS;
+      client.hookFails = false;
+      if (client.link.connected) {
+        client.lf.disconnect();
+        client.link.disconnect();
+      }
+      await this.reopenWithoutHook(client);
+      const linkRng = new SeededRng(this.rng.u32());
+      client.link = new FakeLink(this.server, this.sched, linkRng, quietNetwork, client.identity);
+      client.link.connect();
+      client.lf.connect(client.link);
+      client.wantConnected = true;
+    }
+    for (let round = 0; round < QUIESCE_ROUNDS_MAX; round++) {
+      await this.sched.runUntilIdle();
+      if (this.clients.every(client => client.lf.pending().length === 0)) break;
+      await this.sched.runFor(100_000n);
+    }
+    await this.sched.runFor(1_000_000n);
   }
 
-  const report: SimReport = {
-    seed: opts.seed,
-    steps,
-    ...stats,
-    volatile: clients.reduce((n, c) => n + [...c.ledger.values()].filter(l => l.durable === 'rejected').length, 0),
-    crashes: clients.reduce((n, c) => n + c.crashes, 0),
-    tornRecoveries: clients.reduce((n, c) => n + c.tornRecoveries, 0),
-    faults: clients.reduce(
-      (acc, c) => {
-        for (const k of Object.keys(acc) as (keyof FaultyStorage['stats'])[]) acc[k] += c.storage.stats[k];
-        return acc;
-      },
-      { appendFail: 0, appendTorn: 0, writeFail: 0, writeTorn: 0, readFail: 0 }
-    ),
-    serverExecutions: server.executions.length,
-    serverDuplicates: server.executions.filter(e => e.duplicate).length,
-    violations,
-  };
-  for (const c of clients) {
-    c.unsubEvents?.();
-    await c.lf.close();
+  /** Clients whose beforeDrain hook may fail are reopened with a passing hook so they can drain. */
+  async reopenWithoutHook(client: SimClient): Promise<void> {
+    await client.lf.close();
+    client.storage = client.storage.crash();
+    client.lf = await this.tryOpen(client);
+    this.attachEvents(client);
   }
-  return report;
+
+  // ------------------------------------------------------------ invariants
+
+  checkInvariants(): void {
+    for (const client of this.clients) this.checkClient(client);
+    for (const [key, count] of this.server.effectRuns) {
+      if (count > 1) this.violations.push(`intent ${key} had effects ${count} times on server`);
+    }
+  }
+
+  checkClient(client: SimClient): void {
+    const pending = client.lf.pending().length;
+    if (pending > 0) this.violations.push(`client ${client.identity} still has ${pending} pending`);
+    for (const [key, entry] of client.ledger) {
+      const uuid = new Uuid(BigInt('0x' + key.replace(/-/g, '')));
+      if (entry.durable === 'ok' && entry.status === undefined) {
+        this.violations.push(`durable intent ${key} never settled`);
+      }
+      if (entry.status === 'acked' && !this.server.isApplied(uuid)) {
+        this.violations.push(`intent ${key} acked on client but not applied on server`);
+      }
+      const notApplied = entry.status === 'failed' || entry.status === 'cancelled';
+      if (notApplied && this.server.effectRuns.get(key)) {
+        this.violations.push(`intent ${key} ${entry.status} on client but had effects on server`);
+      }
+    }
+    this.checkConvergence(client);
+  }
+
+  checkConvergence(client: SimClient): void {
+    for (const [accessor, rows] of this.server.snapshot()) {
+      const spec = client.lf.store.spec(accessor);
+      const server = new Map(rows.map(row => [String(spec.rowKey(row)), row]));
+      const localRows: any[] = [...client.lf.db[accessor].iter()];
+      const local = new Map(localRows.map(row => [String(spec.rowKey(row)), row]));
+      if (local.size !== rows.length) {
+        this.violations.push(
+          `client ${client.identity} ${accessor}: ${local.size} vs ${rows.length}`
+        );
+        continue;
+      }
+      for (const [key, row] of local) {
+        const serverRow = server.get(key);
+        if (serverRow === undefined || !deepEqual(serverRow, row)) {
+          this.violations.push(`client ${client.identity} ${accessor} row ${key} differs`);
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- report
+
+  report(): SimReport {
+    const sum = (f: (c: SimClient) => number) => this.clients.reduce((n, c) => n + f(c), 0);
+    const faults = { appendFail: 0, appendTorn: 0, writeFail: 0, writeTorn: 0, readFail: 0 };
+    for (const client of this.clients) {
+      for (const key of Object.keys(faults) as (keyof typeof faults)[]) {
+        faults[key] += client.storage.stats[key];
+      }
+    }
+    for (const client of this.clients) client.unsubEvents?.();
+    return {
+      seed: this.opts.seed,
+      steps: this.steps,
+      ...this.stats,
+      volatile: sum(c => [...c.ledger.values()].filter(l => l.durable === 'rejected').length),
+      crashes: sum(c => c.crashes),
+      openRetries: sum(c => c.openRetries),
+      tornRecoveries: sum(c => c.tornRecoveries),
+      faults,
+      serverExecutions: this.server.executions.length,
+      serverDuplicates: this.server.executions.filter(e => e.duplicate).length,
+      violations: this.violations,
+    };
+  }
 }

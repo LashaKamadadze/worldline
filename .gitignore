@@ -7,3 +7,4 @@ dist/
 examples/todo-client/src/module_bindings/
 *.log
 .DS_Store
+.claude/

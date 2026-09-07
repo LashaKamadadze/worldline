@@ -1,3 +1,5 @@
+import { assert } from '../shared/assert';
+import { REBASE_INTENTS_MAX } from '../shared/limits';
 import type { IntentRecord } from './intent_log';
 
 function touches(readOrWrite: string, write: string): boolean {
@@ -24,15 +26,19 @@ export function dependsOn(later: IntentRecord, earlier: IntentRecord): boolean {
  * Only intents *after* `failed` can depend on it.
  */
 export function dependentsOf(failed: IntentRecord, ordered: IntentRecord[]): IntentRecord[] {
-  const start = ordered.findIndex(r => r === failed);
+  assert(ordered.length <= REBASE_INTENTS_MAX, 'more intents than REBASE_INTENTS_MAX');
+  const start = ordered.indexOf(failed);
+  assert(start >= 0, 'failed intent must be in the ordered list');
   const roots = [failed];
   const out: IntentRecord[] = [];
   for (let i = start + 1; i < ordered.length; i++) {
-    const cand = ordered[i];
-    if (roots.some(r => dependsOn(cand, r))) {
-      out.push(cand);
-      roots.push(cand);
+    const candidate = ordered[i];
+    if (candidate === undefined) break;
+    if (roots.some(root => dependsOn(candidate, root))) {
+      out.push(candidate);
+      roots.push(candidate);
     }
   }
+  assert(out.length <= ordered.length - start - 1, 'more dependents than later intents');
   return out;
 }

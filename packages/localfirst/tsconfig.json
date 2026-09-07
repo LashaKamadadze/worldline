@@ -4,11 +4,28 @@
     "rootDir": ".",
     "noEmit": true,
     "declaration": false,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "paths": {
-      "spacetime:sys@2.0": ["./src/sys-shim/index.ts"],
-      "spacetime:sys@2.1": ["./src/sys-shim/index.ts"]
-    }
+      "spacetime:sys@2.0": [
+        "./src/sys-shim/index.ts"
+      ],
+      "spacetime:sys@2.1": [
+        "./src/sys-shim/index.ts"
+      ]
+    },
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitOverride": true,
+    "useUnknownInCatchVariables": true
   },
-  "include": ["src", "test"]
+  "include": [
+    "src",
+    "test"
+  ]
 }

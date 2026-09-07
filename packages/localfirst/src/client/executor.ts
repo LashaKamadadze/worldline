@@ -1,4 +1,6 @@
 import { ConnectionId, Identity, Timestamp } from 'spacetimedb';
+import { assert } from '../shared/assert';
+import { TIMESTAMP_MICROS_MAX, TIMESTAMP_MICROS_MIN } from '../shared/limits';
 import { UnpredictableError } from './errors';
 import type { LocalStore, StagedWrites } from './local_store';
 import { makeRandom, uuidV4, uuidV7, type Rng } from './rng';
@@ -33,6 +35,11 @@ export function executeReducer(
   args: Row,
   info: ExecInfo
 ): ExecOutcome {
+  assert(typeof fn === 'function', 'reducer body must be a function');
+  assert(typeof args === 'object' && args !== null, 'reducer args must be an object');
+  const micros = info.timestamp.microsSinceUnixEpoch;
+  assert(micros >= TIMESTAMP_MICROS_MIN, 'timestamp before TIMESTAMP_MICROS_MIN');
+  assert(micros <= TIMESTAMP_MICROS_MAX, 'timestamp after TIMESTAMP_MICROS_MAX');
   const tx = store.begin();
   const counter = { value: 0 };
   const ctx = Object.freeze({
@@ -59,5 +66,8 @@ export function executeReducer(
     return { status: 'failed', error: e };
   }
   const { writes, readSet, writeSet } = tx.commit();
+  assert(!tx.open, 'transaction must be closed after commit');
+  for (const layer of writes.values())
+    if (layer.size > 0) assert(writeSet.size > 0, 'writes without write set');
   return { status: 'predicted', writes, readSet, writeSet };
 }

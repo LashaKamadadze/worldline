@@ -72,7 +72,10 @@ export function pendingStore(lf: LocalFirst): PendingStore {
  *   const rows = useLocalTable(useSyncExternalStore, lf, 'todos');
  */
 export function useLocalTable<T = Row>(
-  useSyncExternalStore: (sub: (cb: () => void) => () => void, get: () => readonly T[]) => readonly T[],
+  useSyncExternalStore: (
+    sub: (cb: () => void) => () => void,
+    get: () => readonly T[]
+  ) => readonly T[],
   lf: LocalFirst,
   accessor: string
 ): readonly T[] {

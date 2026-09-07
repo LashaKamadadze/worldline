@@ -81,7 +81,8 @@ describe('IntentLog', () => {
     await log.append(rec(1));
     await log.append(rec(2));
     // Compaction target write tears; the old slot must remain authoritative.
-    storage.fault = (op, _n, bytes) => (op === 'write' && bytes ? Math.floor(bytes.length / 2) : undefined);
+    storage.fault = (op, _n, bytes) =>
+      op === 'write' && bytes ? Math.floor(bytes.length / 2) : undefined;
     await expect(log.compact()).rejects.toThrow();
     storage.fault = undefined;
     const again = await IntentLog.open(storage);

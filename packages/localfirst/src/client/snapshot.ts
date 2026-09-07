@@ -1,4 +1,6 @@
 import { BinaryReader, BinaryWriter } from 'spacetimedb';
+import { assert, assertDefined } from '../shared/assert';
+import { SNAPSHOT_BYTES_MAX, SNAPSHOT_ROWS_PER_TABLE_MAX, TABLES_MAX } from '../shared/limits';
 import { decodeFrames, encodeFrame } from './framing';
 import type { StorageAdapter } from './storage/adapter';
 import type { Row, TableSpec } from './table_spec';
@@ -62,7 +64,7 @@ export class SnapshotStore {
     const { frames } = decodeFrames(bytes);
     if (frames.length !== 1) return null;
     try {
-      return this.#decode(frames[0]);
+      return this.#decode(assertDefined(frames[0], 'one frame'));
     } catch {
       return null;
     }
@@ -75,12 +77,14 @@ export class SnapshotStore {
     const serverTsMicros = r.readI64();
     const workingSetHash = r.readString();
     const n = r.readU32();
+    if (n > TABLES_MAX) return null;
     const tables = new Map<string, Row[]>();
     const skipped: string[] = [];
     for (let i = 0; i < n; i++) {
       const accessor = r.readString();
       const fingerprint = r.readString();
       const rowCount = r.readU32();
+      if (rowCount > SNAPSHOT_ROWS_PER_TABLE_MAX) return null;
       const bytes = r.readUInt8Array();
       const spec = this.#specs.get(accessor);
       if (!spec || spec.fingerprint !== fingerprint) {
@@ -99,6 +103,7 @@ export class SnapshotStore {
     tables: Map<string, Iterable<Row>>,
     meta: Omit<SnapshotMeta, 'generation'>
   ): Promise<SnapshotMeta> {
+    assert(tables.size <= TABLES_MAX, 'snapshot has more tables than TABLES_MAX');
     const generation = ++this.#generation;
     const w = new BinaryWriter(4096);
     w.writeU32(MAGIC);
@@ -114,15 +119,19 @@ export class SnapshotStore {
       for (const row of rows) {
         spec.serializeRow(tw, row);
         count++;
+        assert(count <= SNAPSHOT_ROWS_PER_TABLE_MAX, `snapshot of ${accessor} exceeds row bound`);
       }
       w.writeString(accessor);
       w.writeString(spec.fingerprint);
       w.writeU32(count);
       w.writeUInt8Array(tw.getBuffer());
     }
+    const payload = w.getBuffer();
+    assert(payload.length <= SNAPSHOT_BYTES_MAX, 'snapshot exceeds SNAPSHOT_BYTES_MAX');
     const slot = this.#nextSlot;
     this.#nextSlot = slot === 'a' ? 'b' : 'a';
-    await this.#storage.write(`${this.#prefix}.${slot}`, encodeFrame(w.getBuffer()));
+    await this.#storage.write(`${this.#prefix}.${slot}`, encodeFrame(payload));
+    assert(this.#generation === generation, 'generation changed during save');
     return { generation, ...meta };
   }
 }

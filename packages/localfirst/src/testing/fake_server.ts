@@ -31,7 +31,14 @@ export class FakeServer {
   readonly executions: ExecutionRecord[] = [];
   readonly effectRuns = new Map<string, number>();
   readonly rootAccessors: string[];
-  #entries = new Map<string, { accessor: string; fn: (ctx: any, args: Row) => unknown; deserialize: (r: BinaryReader) => Row }>();
+  #entries = new Map<
+    string,
+    {
+      accessor: string;
+      fn: (ctx: any, args: Row) => unknown;
+      deserialize: (r: BinaryReader) => Row;
+    }
+  >();
   #clock: () => bigint;
   #rng: SeededRng;
   #subscribers = new Set<(accessor: string, delta: Delta) => void>();
@@ -54,7 +61,11 @@ export class FakeServer {
     for (const [accessor, b] of Object.entries(bindings)) {
       const fn = mod[accessor];
       if (typeof fn !== 'function') continue;
-      this.#entries.set(b.name, { accessor, fn, deserialize: ProductType.makeDeserializer(b.paramsType) });
+      this.#entries.set(b.name, {
+        accessor,
+        fn,
+        deserialize: ProductType.makeDeserializer(b.paramsType),
+      });
     }
   }
 
@@ -77,7 +88,13 @@ export class FakeServer {
 
   call(reducerName: string, argsBsatn: Uint8Array, sender: Identity): ServerCallResult {
     const entry = this.#entries.get(reducerName);
-    if (!entry) return { ok: false, error: `no such reducer ${reducerName}`, duplicate: false, deltas: new Map() };
+    if (!entry)
+      return {
+        ok: false,
+        error: `no such reducer ${reducerName}`,
+        duplicate: false,
+        deltas: new Map(),
+      };
     const args = entry.deserialize(new BinaryReader(argsBsatn));
     const intentId: Uuid | undefined = args[INTENT_ID_PARAM];
     const duplicate = intentId ? this.isApplied(intentId) : false;
@@ -88,8 +105,15 @@ export class FakeServer {
       rng: this.#rng,
     });
     if (exec.status !== 'predicted') {
-      const error = exec.status === 'failed' ? String((exec.error as any)?.message ?? exec.error) : exec.reason;
-      this.executions.push({ intentId: intentId?.toString() ?? null, reducer: reducerName, ok: false, duplicate, effects: 0 });
+      const error =
+        exec.status === 'failed' ? String((exec.error as any)?.message ?? exec.error) : exec.reason;
+      this.executions.push({
+        intentId: intentId?.toString() ?? null,
+        reducer: reducerName,
+        ok: false,
+        duplicate,
+        effects: 0,
+      });
       return { ok: false, error, duplicate, deltas: new Map() };
     }
     let effects = 0;
@@ -102,7 +126,13 @@ export class FakeServer {
       this.effectRuns.set(k, (this.effectRuns.get(k) ?? 0) + 1);
     }
     const deltas = this.store.commitToBase(exec.writes);
-    this.executions.push({ intentId: intentId?.toString() ?? null, reducer: reducerName, ok: true, duplicate, effects });
+    this.executions.push({
+      intentId: intentId?.toString() ?? null,
+      reducer: reducerName,
+      ok: true,
+      duplicate,
+      effects,
+    });
     for (const [key, delta] of deltas) {
       if (!this.rootAccessors.includes(key)) continue; // submodule tables are private
       for (const cb of this.#subscribers) cb(key, delta);

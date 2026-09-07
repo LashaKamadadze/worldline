@@ -3,7 +3,10 @@ import type { ReducerBinding } from '../client/local_first';
 import { CLIENT_TS_PARAM, INTENT_ID_PARAM, LF_PARAMS, LF_WRAPPED } from '../shared/symbols';
 
 export function toSnakeCase(s: string): string {
-  return s.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z])([A-Z][a-z])/g, '$1_$2').toLowerCase();
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase();
 }
 
 /**
@@ -14,9 +17,9 @@ export function toSnakeCase(s: string): string {
 export function bindingsFromModule(mod: Record<string, any>): Record<string, ReducerBinding> {
   const out: Record<string, ReducerBinding> = {};
   for (const [key, val] of Object.entries(mod)) {
-    if (key === 'default' || typeof val !== 'function' || !(val as any)[LF_WRAPPED]) continue;
+    if (key === 'default' || typeof val !== 'function' || !val[LF_WRAPPED]) continue;
     const params: Record<string, any> = {
-      ...(val as any)[LF_PARAMS],
+      ...val[LF_PARAMS],
       [INTENT_ID_PARAM]: t.uuid(),
       [CLIENT_TS_PARAM]: t.timestamp(),
     };
@@ -24,7 +27,10 @@ export function bindingsFromModule(mod: Record<string, any>): Record<string, Red
       name: toSnakeCase(key),
       accessorName: key,
       paramsType: {
-        elements: Object.entries(params).map(([name, tb]) => ({ name, algebraicType: tb.algebraicType })),
+        elements: Object.entries(params).map(([name, tb]) => ({
+          name,
+          algebraicType: tb.algebraicType,
+        })),
       },
     };
   }

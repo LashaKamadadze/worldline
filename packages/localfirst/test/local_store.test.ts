@@ -25,7 +25,9 @@ describe('LocalStore', () => {
 
   it('reads through overlay over base and stages writes until commit', () => {
     const store = new LocalStore(specs());
-    store.replaceBase('todos', [{ id: uuid(1), title: 'a', done: false, createdAt: new Timestamp(0n) }]);
+    store.replaceBase('todos', [
+      { id: uuid(1), title: 'a', done: false, createdAt: new Timestamp(0n) },
+    ]);
     const tx = store.begin();
     expect(tx.db.todos.count()).toBe(1n);
     tx.db.todos.insert({ id: uuid(2), title: 'b', done: false, createdAt: new Timestamp(0n) });
@@ -42,7 +44,9 @@ describe('LocalStore', () => {
 
   it('enforces unique constraints across layers with the host error class', () => {
     const store = new LocalStore(specs());
-    store.replaceBase('todos', [{ id: uuid(1), title: 'a', done: false, createdAt: new Timestamp(0n) }]);
+    store.replaceBase('todos', [
+      { id: uuid(1), title: 'a', done: false, createdAt: new Timestamp(0n) },
+    ]);
     const tx = store.begin();
     expect(() =>
       tx.db.todos.insert({ id: uuid(1), title: 'dup', done: false, createdAt: new Timestamp(0n) })
@@ -53,20 +57,32 @@ describe('LocalStore', () => {
     const store = new LocalStore(tableSpecsFromSchema(localfirst.default, 'lf'));
     const tx = store.begin();
     expect(() =>
-      tx.db.lf.purgeSchedule.insert({ scheduledId: 0n, scheduledAt: { tag: 'Interval', value: { __time_duration_micros__: 1n } }, retentionMicros: 1n })
+      tx.db.lf.purgeSchedule.insert({
+        scheduledId: 0n,
+        scheduledAt: { tag: 'Interval', value: { __time_duration_micros__: 1n } },
+        retentionMicros: 1n,
+      })
     ).toThrow(UnpredictableError);
     expect(() => tx.db.lf.purgeSchedule.clear()).toThrow(UnpredictableError);
   });
 
   it('assigns auto-increment ids in authoritative mode', () => {
-    const store = new LocalStore(tableSpecsFromSchema(localfirst.default, 'lf'), { authoritative: true });
+    const store = new LocalStore(tableSpecsFromSchema(localfirst.default, 'lf'), {
+      authoritative: true,
+    });
     const tx = store.begin();
-    const row = tx.db.lf.purgeSchedule.insert({ scheduledId: 0n, scheduledAt: { tag: 'Interval', value: { __time_duration_micros__: 1n } }, retentionMicros: 1n });
+    const row = tx.db.lf.purgeSchedule.insert({
+      scheduledId: 0n,
+      scheduledAt: { tag: 'Interval', value: { __time_duration_micros__: 1n } },
+      retentionMicros: 1n,
+    });
     expect(row.scheduledId).toBe(1n);
   });
 
   it('treats a miss as unknown on partially covered tables', () => {
-    const store = new LocalStore(specs(), { coverage: acc => (acc === 'todos' ? 'partial' : 'full') });
+    const store = new LocalStore(specs(), {
+      coverage: acc => (acc === 'todos' ? 'partial' : 'full'),
+    });
     const tx = store.begin();
     expect(() => tx.db.todos.id.find(uuid(9))).toThrow(CacheMissError);
     expect(tx.db.counters.name.find('nope')).toBeNull();
@@ -96,7 +112,7 @@ describe('LocalStore', () => {
     const tx2 = store.begin();
     tx2.db.counters.name.update({ name: 'a', value: 2n });
     const d2 = store.commitToBase(tx2.commit().writes);
-    expect(d2.get('counters')!.deletes[0].value).toBe(1n);
-    expect(d2.get('counters')!.inserts[0].value).toBe(2n);
+    expect(d2.get('counters')!.deletes[0]!.value).toBe(1n);
+    expect(d2.get('counters')!.inserts[0]!.value).toBe(2n);
   });
 });

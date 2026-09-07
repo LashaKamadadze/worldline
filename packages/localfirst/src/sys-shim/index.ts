@@ -31,9 +31,7 @@ const hostOnly =
 // evaluated before `polyfills.ts` because imports are evaluated depth-first).
 const realConsole = globalThis.console;
 
-export const moduleHooks: unique symbol = Symbol(
-  'spacetime:sys moduleHooks (shim)'
-) as never;
+export const moduleHooks: unique symbol = Symbol('spacetime:sys moduleHooks (shim)') as never;
 
 export type ModuleHooks = unknown;
 
@@ -95,12 +93,8 @@ export const table_id_from_name = hostOnly('table_id_from_name');
 export const index_id_from_name = hostOnly('index_id_from_name');
 export const datastore_table_row_count = hostOnly('datastore_table_row_count');
 export const datastore_table_scan_bsatn = hostOnly('datastore_table_scan_bsatn');
-export const datastore_index_scan_range_bsatn = hostOnly(
-  'datastore_index_scan_range_bsatn'
-);
-export const datastore_index_scan_point_bsatn = hostOnly(
-  'datastore_index_scan_point_bsatn'
-);
+export const datastore_index_scan_range_bsatn = hostOnly('datastore_index_scan_range_bsatn');
+export const datastore_index_scan_point_bsatn = hostOnly('datastore_index_scan_point_bsatn');
 export const row_iter_bsatn_advance = hostOnly('row_iter_bsatn_advance');
 export const row_iter_bsatn_close = hostOnly('row_iter_bsatn_close');
 export const datastore_insert_bsatn = hostOnly('datastore_insert_bsatn');
@@ -111,9 +105,7 @@ export const datastore_delete_by_index_scan_range_bsatn = hostOnly(
 export const datastore_delete_by_index_scan_point_bsatn = hostOnly(
   'datastore_delete_by_index_scan_point_bsatn'
 );
-export const datastore_delete_all_by_eq_bsatn = hostOnly(
-  'datastore_delete_all_by_eq_bsatn'
-);
+export const datastore_delete_all_by_eq_bsatn = hostOnly('datastore_delete_all_by_eq_bsatn');
 export const datastore_clear = hostOnly('datastore_clear');
 export const volatile_nonatomic_schedule_immediate = hostOnly(
   'volatile_nonatomic_schedule_immediate'

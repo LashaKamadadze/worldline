@@ -5,7 +5,9 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 
-const shim = fileURLToPath(new URL('../../../packages/localfirst/src/sys-shim/index.ts', import.meta.url));
+const shim = fileURLToPath(
+  new URL('../../../packages/localfirst/src/sys-shim/index.ts', import.meta.url)
+);
 
 await build({
   entryPoints: [fileURLToPath(new URL('../src/demo.ts', import.meta.url))],

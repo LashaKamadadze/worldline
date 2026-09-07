@@ -1,6 +1,8 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { StorageAdapter } from './adapter';
+import { assertStorageName, type StorageAdapter } from './adapter';
+
+const LOCK_FILE = 'LOCK';
 
 /**
  * Plain files on disk. For Node, Bun, Electron and Tauri (via a Node sidecar or
@@ -9,64 +11,99 @@ import type { StorageAdapter } from './adapter';
  *  - append: O_APPEND write followed by fsync.
  *  - write: temp file + fsync + rename, so a crash leaves either the old or the
  *    new file, never a mix.
+ *  - lock: an O_EXCL lock file holding the pid; stale locks from a dead pid are
+ *    reclaimed, because a crash never gets to release.
  */
 export class NodeFsStorage implements StorageAdapter {
-  #dir: string;
+  #directory: string;
   #ready: Promise<void>;
 
-  constructor(dir: string) {
-    this.#dir = dir;
-    this.#ready = mkdir(dir, { recursive: true }).then(() => undefined);
+  constructor(directory: string) {
+    this.#directory = directory;
+    this.#ready = mkdir(directory, { recursive: true }).then(() => undefined);
   }
 
   #path(name: string): string {
-    if (name.includes('/') || name.includes('..')) {
-      throw new Error(`invalid storage name '${name}'`);
-    }
-    return join(this.#dir, name);
+    assertStorageName(name);
+    return join(this.#directory, name);
   }
 
   async append(name: string, bytes: Uint8Array): Promise<void> {
     await this.#ready;
-    const fh = await open(this.#path(name), 'a');
+    const handle = await open(this.#path(name), 'a');
     try {
-      await fh.write(bytes);
-      await fh.sync();
+      await handle.write(bytes);
+      await handle.sync();
     } finally {
-      await fh.close();
+      await handle.close();
     }
   }
 
   async read(name: string): Promise<Uint8Array | null> {
     await this.#ready;
     try {
-      const buf = await readFile(this.#path(name));
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-    } catch (e: any) {
-      if (e?.code === 'ENOENT') return null;
-      throw e;
+      const buffer = await readFile(this.#path(name));
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    } catch (error: unknown) {
+      if ((error as { code?: string }).code === 'ENOENT') return null;
+      throw error;
     }
   }
 
   async write(name: string, bytes: Uint8Array): Promise<void> {
     await this.#ready;
     const target = this.#path(name);
-    const tmp = `${target}.tmp`;
-    const fh = await open(tmp, 'w');
+    const temp = `${target}.tmp`;
+    const handle = await open(temp, 'w');
     try {
-      await fh.write(bytes);
-      await fh.sync();
+      await handle.write(bytes);
+      await handle.sync();
     } finally {
-      await fh.close();
+      await handle.close();
     }
-    await rename(tmp, target);
+    await rename(temp, target);
   }
 
   async remove(name: string): Promise<void> {
     await this.#ready;
     await rm(this.#path(name), { force: true });
   }
+
+  async lock(): Promise<(() => Promise<void>) | null> {
+    await this.#ready;
+    const path = join(this.#directory, LOCK_FILE);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const handle = await open(path, 'wx');
+        await handle.writeFile(String(process.pid));
+        await handle.close();
+        return async () => {
+          await rm(path, { force: true });
+        };
+      } catch (error: unknown) {
+        if ((error as { code?: string }).code !== 'EEXIST') throw error;
+        if (!(await lockIsStale(path))) return null;
+        await rm(path, { force: true });
+      }
+    }
+    return null;
+  }
 }
 
-// Keep `writeFile` referenced for environments that lack `open` (older Bun builds).
-void writeFile;
+/** A lock is stale when the pid it names is not running. */
+async function lockIsStale(path: string): Promise<boolean> {
+  let pid: number;
+  try {
+    pid = Number((await readFile(path, 'utf8')).trim());
+  } catch {
+    return true;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  if (pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error: unknown) {
+    return (error as { code?: string }).code === 'ESRCH';
+  }
+}

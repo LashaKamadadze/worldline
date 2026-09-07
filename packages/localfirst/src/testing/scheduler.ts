@@ -30,7 +30,8 @@ export class VirtualScheduler {
     const until = this.timeMicros + micros;
     while (this.#queue.length) {
       this.#queue.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.seq - b.seq));
-      if (this.#queue[0].at > until) break;
+      const head = this.#queue[0];
+      if (head === undefined || head.at > until) break;
       await this.step();
     }
     this.timeMicros = until;

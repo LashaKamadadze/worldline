@@ -1,4 +1,6 @@
-import { concatBytes, type StorageAdapter } from './adapter';
+import { assertStorageName, type StorageAdapter } from './adapter';
+
+const LOCK_NAME_PREFIX = 'stdb-localfirst:';
 
 /**
  * Origin Private File System adapter for browsers.
@@ -7,14 +9,20 @@ import { concatBytes, type StorageAdapter } from './adapter';
  * main thread only `createWritable` exists; it is still durable on `close()`,
  * but each append rewrites through a stream. Both paths are handled.
  *
- * The caller should request persistent storage (`navigator.storage.persist()`)
- * so the browser does not evict the directory under disk pressure.
+ * The single-writer lock uses the Web Locks API, which is scoped to the origin
+ * and released automatically when the tab dies.
+ *
+ * The caller should request persistent storage (`requestPersistence`) so the
+ * browser does not evict the directory under disk pressure.
  */
 export class OpfsStorage implements StorageAdapter {
-  #dir: Promise<FileSystemDirectoryHandle>;
+  #directoryName: string;
+  #directory: Promise<FileSystemDirectoryHandle>;
 
   constructor(directoryName = 'stdb-localfirst') {
-    this.#dir = navigator.storage
+    assertStorageName(directoryName);
+    this.#directoryName = directoryName;
+    this.#directory = navigator.storage
       .getDirectory()
       .then(root => root.getDirectoryHandle(directoryName, { create: true }));
   }
@@ -38,72 +46,112 @@ export class OpfsStorage implements StorageAdapter {
   }
 
   async #file(name: string, create: boolean): Promise<FileSystemFileHandle | null> {
-    const dir = await this.#dir;
+    assertStorageName(name);
+    const directory = await this.#directory;
     try {
-      return await dir.getFileHandle(name, { create });
-    } catch (e: any) {
-      if (e?.name === 'NotFoundError') return null;
-      throw e;
+      return await directory.getFileHandle(name, { create });
+    } catch (error: unknown) {
+      if ((error as { name?: string }).name === 'NotFoundError') return null;
+      throw error;
     }
   }
 
   async append(name: string, bytes: Uint8Array): Promise<void> {
-    const fh = (await this.#file(name, true))!;
-    const anyFh = fh as any;
-    if (typeof anyFh.createSyncAccessHandle === 'function') {
-      const h = await anyFh.createSyncAccessHandle();
+    const handle = await this.#file(name, true);
+    if (handle === null) throw new Error(`could not create ${name}`);
+    const syncHandle = await tryCreateSyncAccessHandle(handle);
+    if (syncHandle !== null) {
       try {
-        const size = h.getSize();
-        h.write(bytes, { at: size });
-        h.flush();
+        syncHandle.write(bytes, { at: syncHandle.getSize() });
+        syncHandle.flush();
       } finally {
-        h.close();
+        syncHandle.close();
       }
       return;
     }
-    const w = await fh.createWritable({ keepExistingData: true });
-    const size = (await fh.getFile()).size;
-    await w.seek(size);
-    await w.write(toArrayBuffer(bytes));
-    await w.close();
+    const writable = await handle.createWritable({ keepExistingData: true });
+    const size = (await handle.getFile()).size;
+    await writable.seek(size);
+    await writable.write(toArrayBuffer(bytes));
+    await writable.close();
   }
 
   async read(name: string): Promise<Uint8Array | null> {
-    const fh = await this.#file(name, false);
-    if (!fh) return null;
-    return new Uint8Array(await (await fh.getFile()).arrayBuffer());
+    const handle = await this.#file(name, false);
+    if (handle === null) return null;
+    return new Uint8Array(await (await handle.getFile()).arrayBuffer());
   }
 
   async write(name: string, bytes: Uint8Array): Promise<void> {
-    const fh = (await this.#file(name, true))!;
-    const anyFh = fh as any;
-    if (typeof anyFh.createSyncAccessHandle === 'function') {
-      const h = await anyFh.createSyncAccessHandle();
+    const handle = await this.#file(name, true);
+    if (handle === null) throw new Error(`could not create ${name}`);
+    const syncHandle = await tryCreateSyncAccessHandle(handle);
+    if (syncHandle !== null) {
       try {
-        h.truncate(0);
-        h.write(bytes, { at: 0 });
-        h.flush();
+        syncHandle.truncate(0);
+        syncHandle.write(bytes, { at: 0 });
+        syncHandle.flush();
       } finally {
-        h.close();
+        syncHandle.close();
       }
       return;
     }
-    const w = await fh.createWritable({ keepExistingData: false });
-    await w.write(toArrayBuffer(bytes));
-    await w.close();
+    const writable = await handle.createWritable({ keepExistingData: false });
+    await writable.write(toArrayBuffer(bytes));
+    await writable.close();
   }
 
   async remove(name: string): Promise<void> {
-    const dir = await this.#dir;
+    assertStorageName(name);
+    const directory = await this.#directory;
     try {
-      await dir.removeEntry(name);
-    } catch (e: any) {
-      if (e?.name !== 'NotFoundError') throw e;
+      await directory.removeEntry(name);
+    } catch (error: unknown) {
+      if ((error as { name?: string }).name !== 'NotFoundError') throw error;
     }
+  }
+
+  async lock(): Promise<(() => Promise<void>) | null> {
+    const locks = (navigator as { locks?: LockManager }).locks;
+    if (locks === undefined) return null;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => (release = resolve));
+    const granted = await new Promise<boolean>(resolve => {
+      void locks.request(LOCK_NAME_PREFIX + this.#directoryName, { ifAvailable: true }, lock => {
+        if (lock === null) {
+          resolve(false);
+          return undefined;
+        }
+        resolve(true);
+        return held;
+      });
+    });
+    if (!granted) return null;
+    return async () => release();
   }
 }
 
-void concatBytes;
+interface SyncAccessHandle {
+  getSize(): number;
+  write(buffer: Uint8Array, options: { at: number }): number;
+  truncate(size: number): void;
+  flush(): void;
+  close(): void;
+}
+
+async function tryCreateSyncAccessHandle(
+  handle: FileSystemFileHandle
+): Promise<SyncAccessHandle | null> {
+  const candidate = handle as unknown as {
+    createSyncAccessHandle?: () => Promise<SyncAccessHandle>;
+  };
+  if (typeof candidate.createSyncAccessHandle !== 'function') return null;
+  try {
+    return await candidate.createSyncAccessHandle();
+  } catch {
+    return null; // Only available in dedicated workers; fall back to streams.
+  }
+}
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const out = new ArrayBuffer(bytes.byteLength);

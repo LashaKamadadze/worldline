@@ -24,7 +24,7 @@ const accessors = ['todos', 'counters'];
 const open = () =>
   LocalFirst.open({
     module: mod,
-    reducers: reducers as any,
+    reducers: reducers,
     storage: new NodeFsStorage(DATA_DIR),
     workingSet,
     snapshotDebounceMs: 200,
@@ -33,21 +33,28 @@ const open = () =>
 const show = (label: string, lf: LocalFirst) => {
   const todos = [...lf.db.todos.iter()].map((t: any) => `${t.done ? '[x]' : '[ ]'} ${t.title}`);
   const counters = [...lf.db.counters.iter()].map((c: any) => `${c.name}=${c.value}`);
-  console.log(`\n== ${label} ==\n  todos:    ${todos.join(', ') || '(none)'}\n  counters: ${counters.join(', ') || '(none)'}\n  pending:  ${lf.pending().length}`);
+  console.log(
+    [
+      `\n== ${label} ==`,
+      `  todos:    ${todos.join(', ') || '(none)'}`,
+      `  counters: ${counters.join(', ') || '(none)'}`,
+      `  pending:  ${lf.pending().length}`,
+    ].join('\n')
+  );
 };
 
-async function main() {
-  await rm(DATA_DIR, { recursive: true, force: true });
-
-  // 1. Offline session.
-  let lf = await open();
+/** Phase 1: everything happens with no network at all. */
+async function offlineSession(): Promise<void> {
+  const lf = await open();
   const a = Uuid.fromRandomBytesV4(crypto.getRandomValues(new Uint8Array(16)));
   const b = Uuid.fromRandomBytesV4(crypto.getRandomValues(new Uint8Array(16)));
-  const h1 = lf.call(mod.createTodo, { id: a, title: 'write the library' });
-  const h2 = lf.call(mod.createTodo, { id: b, title: 'test it offline' });
-  const h3 = lf.call(mod.toggleTodo, { id: a });
-  const h4 = lf.call(mod.bump, { name: 'demo', by: 3n });
-  await Promise.all([h1.durable, h2.durable, h3.durable, h4.durable]);
+  const handles = [
+    lf.call(mod.createTodo, { id: a, title: 'write the library' }),
+    lf.call(mod.createTodo, { id: b, title: 'test it offline' }),
+    lf.call(mod.toggleTodo, { id: a }),
+    lf.call(mod.bump, { name: 'demo', by: 3n }),
+  ];
+  await Promise.all(handles.map(h => h.durable));
   try {
     lf.call(mod.createTodo, { id: a, title: 'duplicate id' });
   } catch (e) {
@@ -55,25 +62,26 @@ async function main() {
   }
   show('offline, before restart', lf);
   await lf.close();
+}
 
-  // 2. Restart from disk.
-  lf = await open();
-  show('after restart (replayed from log)', lf);
-  if (lf.pending().length !== 4) throw new Error('expected 4 pending intents after restart');
+/** Resolves when every currently pending intent has been acked, failed or cancelled. */
+function allSettled(lf: LocalFirst): Promise<void[]> {
+  return Promise.all(
+    lf.pending().map(
+      () =>
+        new Promise<void>(resolve => {
+          const off = lf.onIntent(ev => {
+            if (ev.type !== 'acked' && ev.type !== 'failed' && ev.type !== 'cancelled') return;
+            off();
+            resolve();
+          });
+        })
+    )
+  );
+}
 
-  // 3. Go online.
-  const settled = Promise.all(lf.pending().map(() => new Promise<void>(r => {
-    const off = lf.onIntent(ev => {
-      if (ev.type === 'acked' || ev.type === 'failed' || ev.type === 'cancelled') {
-        off();
-        r();
-      }
-    });
-  })));
-  const events: string[] = [];
-  lf.onIntent(ev => events.push(ev.type === 'rebase' ? `rebase(${ev.predicted}/${ev.unpredicted})` : ev.type));
-
-  const conn = await new Promise<DbConnection>((resolve, reject) => {
+function connect(lf: LocalFirst): Promise<DbConnection> {
+  return new Promise<DbConnection>((resolve, reject) => {
     DbConnection.builder()
       .withUri(URI)
       .withDatabaseName(DB)
@@ -86,29 +94,51 @@ async function main() {
       .onDisconnect(() => lf.disconnect())
       .build();
   });
+}
 
-  await Promise.race([
-    settled,
-    new Promise((_, rej) => setTimeout(() => rej(new Error('timed out waiting for acks')), 15_000)),
-  ]);
+const describeTodos = (rows: Iterable<any>): string[] =>
+  [...rows].map(t => `${t.done ? '[x]' : '[ ]'} ${t.title}`).sort();
+const describeCounters = (rows: Iterable<any>): string[] =>
+  [...rows].map(c => `${c.name}=${c.value}`).sort();
+
+/** Phase 4: the merged local view must equal the server's view of the same subscription. */
+function compareWithServer(lf: LocalFirst, conn: DbConnection): boolean {
+  const server = [describeTodos(conn.db.todos.iter()), describeCounters(conn.db.counters.iter())];
+  const local = [describeTodos(lf.db.todos.iter()), describeCounters(lf.db.counters.iter())];
+  const same = JSON.stringify(server) === JSON.stringify(local);
+  console.log(`\nlocal view == server view: ${same ? 'YES' : 'NO'}`);
+  if (!same) console.error('MISMATCH', { server, local });
+  return same && lf.pending().length === 0 && !lf.store.hasOverlay();
+}
+
+async function main(): Promise<void> {
+  await rm(DATA_DIR, { recursive: true, force: true });
+  await offlineSession();
+
+  // Phase 2: restart from disk.
+  const lf = await open();
+  show('after restart (replayed from log)', lf);
+  if (lf.pending().length !== 4) throw new Error('expected 4 pending intents after restart');
+
+  // Phase 3: go online and drain.
+  const settled = allSettled(lf);
+  const events: string[] = [];
+  lf.onIntent(ev =>
+    events.push(ev.type === 'rebase' ? `rebase(${ev.predicted}/${ev.unpredicted})` : ev.type)
+  );
+  const conn = await connect(lf);
+  const timeout = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error('timed out waiting for acks')), 15_000)
+  );
+  await Promise.race([settled, timeout]);
   await new Promise(r => setTimeout(r, 300)); // let the last rebase/snapshot settle
   show('online, drained', lf);
   console.log(`  events:   ${events.join(' ')}`);
 
-  // 4. Compare with the server's view of the same subscription.
-  const serverTodos = [...conn.db.todos.iter()].map((t: any) => `${t.done ? '[x]' : '[ ]'} ${t.title}`).sort();
-  const localTodos = [...lf.db.todos.iter()].map((t: any) => `${t.done ? '[x]' : '[ ]'} ${t.title}`).sort();
-  const serverCounters = [...conn.db.counters.iter()].map((c: any) => `${c.name}=${c.value}`).sort();
-  const localCounters = [...lf.db.counters.iter()].map((c: any) => `${c.name}=${c.value}`).sort();
-  const same = JSON.stringify([serverTodos, serverCounters]) === JSON.stringify([localTodos, localCounters]);
-  console.log(`\nlocal view == server view: ${same ? 'YES' : 'NO'}`);
-  if (!same || lf.pending().length !== 0 || lf.store.hasOverlay()) {
-    console.error('MISMATCH', { serverTodos, localTodos, serverCounters, localCounters });
-    process.exit(1);
-  }
+  const ok = compareWithServer(lf, conn);
   await lf.close();
   conn.disconnect();
-  process.exit(0);
+  process.exit(ok ? 0 : 1);
 }
 
 main().catch(e => {

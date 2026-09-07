@@ -1,6 +1,12 @@
 import { schema, table, t, ScheduleAt, type ReducerCtx } from 'spacetimedb/server';
 import type { Timestamp, TypeBuilder, InferTypeOfParams } from 'spacetimedb';
-import { CLIENT_TS_PARAM, INTENT_ID_PARAM, LF_INNER, LF_PARAMS, LF_WRAPPED } from '../shared/symbols';
+import {
+  CLIENT_TS_PARAM,
+  INTENT_ID_PARAM,
+  LF_INNER,
+  LF_PARAMS,
+  LF_WRAPPED,
+} from '../shared/symbols';
 
 /**
  * Server half of stdb-localfirst: a submodule you mount under an alias, plus a
@@ -8,7 +14,7 @@ import { CLIENT_TS_PARAM, INTENT_ID_PARAM, LF_INNER, LF_PARAMS, LF_WRAPPED } fro
  *
  *   import * as localfirst from 'stdb-localfirst/server';
  *   const spacetimedb = schema({ todos, lf: localfirst });
- *   export const createTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid(), title: t.string() }, (ctx, a) => ...);
+ *   export const createTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid() }, (ctx, a) => ...);
  *   export const init = spacetimedb.init(ctx => installPurge(ctx.as.lf, {}));
  */
 
@@ -72,8 +78,10 @@ export function installPurge(
 
 type AnyParams = Record<string, TypeBuilder<any, any>>;
 
-export type OfflineCtx<S> = ReducerCtx<S extends { schemaType: infer D } ? (D extends object ? D : any) : any> & {
-  /** When the user performed the action on their device (server `timestamp` is when it committed). */
+export type OfflineCtx<S> = ReducerCtx<
+  S extends { schemaType: infer D } ? (D extends object ? D : any) : any
+> & {
+  /** When the user acted on their device; server `timestamp` is when it committed. */
   readonly clientTimestamp: Timestamp;
 };
 
@@ -152,9 +160,8 @@ export function offlineReducer<
     const { [INTENT_ID_PARAM]: intentId, [CLIENT_TS_PARAM]: clientTs, ...rest } = args;
     const ns = ctx.db[alias];
     if (!ns || !ns.appliedIntents) {
-      throw new Error(
-        `stdb-localfirst: submodule is not mounted under '${alias}'; add \`${alias}: localfirst\` to schema()`
-      );
+      const hint = `add \`${alias}: localfirst\` to schema()`;
+      throw new Error(`stdb-localfirst: submodule not mounted under '${alias}'; ${hint}`);
     }
     if (ns.appliedIntents.intentId.find(intentId) !== null) {
       return; // already applied: at-least-once delivery collapses to exactly-once

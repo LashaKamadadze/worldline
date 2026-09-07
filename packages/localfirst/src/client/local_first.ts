@@ -1,17 +1,28 @@
-import { Identity, ProductType, Timestamp, Uuid, BinaryReader, BinaryWriter } from 'spacetimedb';
+import { BinaryReader, BinaryWriter, Identity, ProductType, Timestamp, Uuid } from 'spacetimedb';
+import { assert, assertDefined } from '../shared/assert';
+import {
+  COMPACT_EVERY_MARKS_DEFAULT,
+  INFLIGHT_WINDOW_MAX,
+  INTENT_ARGS_BYTES_MAX,
+  INTENTS_PENDING_MAX,
+  LISTENERS_MAX,
+  REBASE_INTENTS_MAX,
+  SNAPSHOT_DEBOUNCE_MS_DEFAULT,
+  SNAPSHOT_DEBOUNCE_MS_MAX,
+} from '../shared/limits';
 import { CLIENT_TS_PARAM, INTENT_ID_PARAM, LF_INNER, LF_WRAPPED } from '../shared/symbols';
+import { deepEqual, matchRange } from './compare';
 import { dependentsOf } from './deps';
 import { LocalFirstError } from './errors';
-import { executeReducer } from './executor';
+import { executeReducer, type ExecOutcome } from './executor';
 import { idKey, IntentLog, type IntentRecord, type IntentStatus } from './intent_log';
 import { LocalStore, type Coverage } from './local_store';
-import { matchRange, deepEqual } from './compare';
 import { CryptoRng, uuidV7, type Rng } from './rng';
+import type { WorkingSet } from './sdk_link';
 import { SnapshotStore, type SnapshotMeta } from './snapshot';
 import type { StorageAdapter } from './storage/adapter';
 import { tableSpecsFromSchema, type Row, type TableSpec } from './table_spec';
 import type { Link } from './transport';
-import type { WorkingSet } from './sdk_link';
 
 export interface ReducerBinding {
   name: string;
@@ -48,6 +59,8 @@ export interface LocalFirstOptions {
    * if it rejects, nothing is sent until the next `connect()`.
    */
   beforeDrain?: (lf: LocalFirst) => Promise<void> | void;
+  /** Skip the single-writer storage lock (tests only). */
+  skipLock?: boolean;
 }
 
 export interface CallOptions {
@@ -62,7 +75,7 @@ export interface CallHandle {
   intentId: Uuid;
   /** Whether the local prediction was applied. */
   predicted: boolean;
-  /** Resolves once the intent is on disk. Rejects if storage failed (intent kept in memory only). */
+  /** Resolves once the intent is on disk. Rejects if storage failed (kept in memory only). */
   durable: Promise<void>;
   /** Resolves with the final status once the server has decided. */
   settled: Promise<Exclude<IntentStatus, 'pending'>>;
@@ -76,22 +89,24 @@ export type IntentEvent =
   | { type: 'cancelled'; intent: IntentRecord; because: IntentRecord }
   | { type: 'rebase'; predicted: number; unpredicted: number };
 
+type SettledStatus = Exclude<IntentStatus, 'pending'>;
+
 interface ReducerEntry {
   accessorName: string;
   name: string;
   wrapped: boolean;
   innerFn: (ctx: any, args: Row) => unknown;
-  serialize: (w: BinaryWriter, v: Row) => void;
-  deserialize: (r: BinaryReader) => Row;
+  serialize: (writer: BinaryWriter, value: Row) => void;
+  deserialize: (reader: BinaryReader) => Row;
 }
 
-const hashString = (s: string): string => {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
+const hashString = (text: string): string => {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
   }
-  return h.toString(16);
+  return hash.toString(16);
 };
 
 /**
@@ -100,95 +115,141 @@ const hashString = (s: string): string => {
  * Lifecycle: `open()` loads the snapshot and log and rebuilds predictions;
  * `call()` runs a reducer locally and queues it; `connect()` attaches a live
  * server link, drains the queue and rebases on every server update.
+ *
+ * Every queue here is bounded by `shared/limits.ts`; `call()` refuses work
+ * rather than growing without bound.
  */
+/** Any reducer export from the module (wrapped or plain); used as a map key. */
+export type AnyReducer = (...args: any[]) => unknown;
+
 export class LocalFirst {
   readonly store: LocalStore;
   readonly log: IntentLog;
   readonly db: Record<string, any>;
-  #snap: SnapshotStore;
-  #opts: LocalFirstOptions;
-  #entries = new Map<Function, ReducerEntry>();
-  #byAccessor = new Map<string, ReducerEntry>();
+  #snapshot: SnapshotStore;
+  #options: LocalFirstOptions;
+  #entries = new Map<AnyReducer, ReducerEntry>();
+  #entriesByAccessor = new Map<string, ReducerEntry>();
   #identity: Identity;
   #clock: () => bigint;
   #rng: Rng;
   #uuidCounter = { value: 0 };
   #link: Link | null = null;
-  #linkGen = 0;
+  #linkGeneration = 0;
+  #linkUnsubscribes: (() => void)[] = [];
   #drainReady = false;
-  #linkUnsubs: (() => void)[] = [];
   #inflight = new Set<string>();
   #window: number;
-  #settlers = new Map<string, (s: Exclude<IntentStatus, 'pending'>) => void>();
-  #listeners = new Set<(ev: IntentEvent) => void>();
+  #settlers = new Map<string, (status: SettledStatus) => void>();
+  #listeners = new Set<(event: IntentEvent) => void>();
   #userArgs = new Map<string, Row>();
   #predictedNow = new Map<string, boolean>();
   #rebaseScheduled = false;
   #snapshotTimer: unknown = undefined;
-  #lastServerTs = 0n;
+  #serverTsMicrosLast = 0n;
   #closed = false;
   #workingSetHash: string;
   #accessors: string[];
+  #releaseLock: (() => Promise<void>) | null = null;
 
-  private constructor(opts: LocalFirstOptions, store: LocalStore, log: IntentLog, snap: SnapshotStore) {
-    this.#opts = opts;
+  private constructor(
+    options: LocalFirstOptions,
+    store: LocalStore,
+    log: IntentLog,
+    snapshot: SnapshotStore,
+    releaseLock: (() => Promise<void>) | null
+  ) {
+    this.#options = options;
     this.store = store;
     this.log = log;
-    this.#snap = snap;
-    this.#identity = opts.identity ?? Identity.zero();
-    this.#clock = opts.clock ?? (() => BigInt(Date.now()) * 1000n);
-    this.#rng = opts.rng ?? new CryptoRng();
-    this.#window = Math.max(1, opts.inflightWindow ?? 1);
-    this.#accessors = store.tableNames.filter(a => !store.spec(a).namespace);
-    this.#workingSetHash = hashString(
-      typeof opts.workingSet.queries === 'function'
-        ? opts.workingSet.queries.toString()
-        : opts.workingSet.queries.join('\n')
-    );
+    this.#snapshot = snapshot;
+    this.#releaseLock = releaseLock;
+    this.#identity = options.identity ?? Identity.zero();
+    this.#clock = options.clock ?? (() => BigInt(Date.now()) * 1000n);
+    this.#rng = options.rng ?? new CryptoRng();
+    this.#window = options.inflightWindow ?? 1;
+    assert(this.#window >= 1, 'inflightWindow must be at least 1');
+    assert(this.#window <= INFLIGHT_WINDOW_MAX, `inflightWindow above ${INFLIGHT_WINDOW_MAX}`);
+    const debounce = options.snapshotDebounceMs;
+    if (typeof debounce === 'number')
+      assert(
+        debounce >= 0 && debounce <= SNAPSHOT_DEBOUNCE_MS_MAX,
+        'snapshotDebounceMs out of range'
+      );
+    this.#accessors = store.tableNames.filter(name => store.spec(name).namespace === undefined);
+    assert(this.#accessors.length > 0, 'no root tables');
+    this.#workingSetHash = hashString(workingSetText(options.workingSet));
+    this.#registerReducers(options);
+    this.db = buildReadView(store, this.#accessors);
+  }
 
-    for (const [key, val] of Object.entries(opts.module)) {
-      if (key === 'default' || typeof val !== 'function') continue;
-      const binding = opts.reducers[key];
-      if (!binding) continue;
-      const wrapped = (val as any)[LF_WRAPPED] === true;
+  #registerReducers(options: LocalFirstOptions): void {
+    for (const [key, value] of Object.entries(options.module)) {
+      if (key === 'default') continue;
+      if (typeof value !== 'function') continue;
+      const binding = options.reducers[key];
+      if (binding === undefined) continue;
+      const wrapped = value[LF_WRAPPED] === true;
       const elements: { name: string }[] = binding.paramsType?.elements ?? [];
-      if (wrapped && !elements.some(e => e.name === INTENT_ID_PARAM)) {
-        throw new LocalFirstError(
-          `reducer '${binding.name}' is wrapped with offlineReducer() but the generated bindings ` +
-            `have no '${INTENT_ID_PARAM}' parameter; regenerate module bindings`
+      const hasIntentId = elements.some(element => element.name === INTENT_ID_PARAM);
+      if (wrapped)
+        assert(
+          hasIntentId,
+          `bindings for '${binding.name}' lack '${INTENT_ID_PARAM}'; regenerate them`
         );
-      }
+      if (!wrapped)
+        assert(
+          !hasIntentId,
+          `bindings for '${binding.name}' have '${INTENT_ID_PARAM}' but the export is not wrapped`
+        );
       const entry: ReducerEntry = {
         accessorName: key,
         name: binding.name,
         wrapped,
-        innerFn: wrapped ? (val as any)[LF_INNER] : (val as any),
+        innerFn: wrapped ? value[LF_INNER] : value,
         serialize: ProductType.makeSerializer(binding.paramsType),
         deserialize: ProductType.makeDeserializer(binding.paramsType),
       };
-      this.#entries.set(val as Function, entry);
-      this.#byAccessor.set(key, entry);
+      assert(typeof entry.innerFn === 'function', `reducer '${key}' has no callable body`);
+      this.#entries.set(value as AnyReducer, entry);
+      this.#entriesByAccessor.set(key, entry);
     }
-
-    this.db = this.#buildReadView();
+    assert(this.#entries.size > 0, 'no reducers matched between the module and the bindings');
   }
 
-  static async open(opts: LocalFirstOptions): Promise<LocalFirst> {
-    const specs = opts.tables ?? tableSpecsFromSchema(opts.module.default);
-    if (!specs.length) throw new LocalFirstError('no tables found; pass `tables` or a module with a default schema export');
-    const coverage = (acc: string): Coverage => opts.workingSet.coverage?.[acc] ?? 'full';
+  static async open(options: LocalFirstOptions): Promise<LocalFirst> {
+    const specs = options.tables ?? tableSpecsFromSchema(options.module.default);
+    if (specs.length === 0)
+      throw new LocalFirstError(
+        'no tables found; pass `tables` or a module with a default schema export'
+      );
+    const coverage = (accessor: string): Coverage =>
+      options.workingSet.coverage?.[accessor] ?? 'full';
     const store = new LocalStore(specs, { coverage });
-    const log = await IntentLog.open(opts.storage);
-    const snap = new SnapshotStore(opts.storage, store.specs);
-    const loaded = await snap.load();
-    const lf = new LocalFirst(opts, store, log, snap);
-    if (loaded) {
-      lf.#lastServerTs = loaded.meta.serverTsMicros;
-      for (const [acc, rows] of loaded.tables) {
-        if (store.specs.has(acc)) store.replaceBase(acc, rows);
+
+    const releaseLock = options.skipLock ? null : await acquireLock(options.storage);
+
+    let log: IntentLog;
+    let snapshot: SnapshotStore;
+    let loaded;
+    try {
+      log = await IntentLog.open(options.storage);
+      snapshot = new SnapshotStore(options.storage, store.specs);
+      loaded = await snapshot.load();
+    } catch (error) {
+      await releaseLock?.();
+      throw error;
+    }
+
+    const lf = new LocalFirst(options, store, log, snapshot, releaseLock);
+    if (loaded !== null) {
+      lf.#serverTsMicrosLast = loaded.meta.serverTsMicros;
+      for (const [accessor, rows] of loaded.tables) {
+        if (store.specs.has(accessor)) store.replaceBase(accessor, rows);
       }
     }
     lf.rebase();
+    assert(lf.log.pending.size <= INTENTS_PENDING_MAX, 'recovered more intents than the bound');
     return lf;
   }
 
@@ -206,8 +267,12 @@ export class LocalFirst {
     return this.#link !== null;
   }
 
+  get closed(): boolean {
+    return this.#closed;
+  }
+
   get lastServerTimestamp(): Timestamp {
-    return new Timestamp(this.#lastServerTs);
+    return new Timestamp(this.#serverTsMicrosLast);
   }
 
   pending(): IntentRecord[] {
@@ -218,22 +283,24 @@ export class LocalFirst {
     return this.#predictedNow.get(idKey(intentId)) ?? false;
   }
 
-  onIntent(cb: (ev: IntentEvent) => void): () => void {
-    this.#listeners.add(cb);
-    return () => this.#listeners.delete(cb);
+  onIntent(listener: (event: IntentEvent) => void): () => void {
+    assert(this.#listeners.size < LISTENERS_MAX, `more than ${LISTENERS_MAX} intent listeners`);
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   /** Fires when the merged view of any table changed. */
-  subscribe(cb: (changed: ReadonlySet<string>) => void): () => void {
-    return this.store.subscribe(cb);
+  subscribe(listener: (changed: ReadonlySet<string>) => void): () => void {
+    return this.store.subscribe(listener);
   }
 
-  #emit(ev: IntentEvent) {
-    for (const l of this.#listeners) {
+  /** Listener exceptions are isolated so the engine keeps running. */
+  #emit(event: IntentEvent): void {
+    for (const listener of this.#listeners) {
       try {
-        l(ev);
-      } catch (e) {
-        console.error('stdb-localfirst listener threw', e);
+        listener(event);
+      } catch (error) {
+        console.error('stdb-localfirst: intent listener threw', error);
       }
     }
   }
@@ -242,198 +309,227 @@ export class LocalFirst {
 
   /**
    * Run `reducer` locally now and queue it for the server.
-   * Throws synchronously if the reducer rejects the call locally.
+   * Throws synchronously if the reducer rejects the call locally, if the
+   * pending queue is full, or (with `strict`) if the effect cannot be predicted.
    */
-  call(reducer: Function, args: Row = {}, options: CallOptions = {}): CallHandle {
-    if (this.#closed) throw new LocalFirstError('LocalFirst is closed');
+  call(reducer: AnyReducer, args: Row = {}, options: CallOptions = {}): CallHandle {
+    assert(!this.#closed, 'call() on a closed LocalFirst');
+    assert(typeof args === 'object' && args !== null, 'args must be an object');
     const entry = this.#entries.get(reducer);
-    if (!entry) {
+    if (entry === undefined) {
       throw new LocalFirstError(
-        'unknown reducer: pass an export of the module namespace object that also exists in the generated `reducers` map'
+        'unknown reducer: pass a module export that also exists in the generated `reducers` map'
       );
     }
-    const now = this.#clock();
-    const intentId = uuidV7(this.#rng, this.#uuidCounter, now);
-    const clientTs = new Timestamp(now);
-    const fullArgs = entry.wrapped
-      ? { ...args, [INTENT_ID_PARAM]: intentId, [CLIENT_TS_PARAM]: clientTs }
-      : args;
-    const w = new BinaryWriter(256);
-    entry.serialize(w, fullArgs);
-    const argsBsatn = w.getBuffer();
+    if (this.log.pending.size >= INTENTS_PENDING_MAX) {
+      throw new LocalFirstError(
+        `too many pending intents (${INTENTS_PENDING_MAX}); connect and drain first`
+      );
+    }
+    const nowMicros = this.#clock();
+    const intentId = uuidV7(this.#rng, this.#uuidCounter, nowMicros);
+    const clientTs = new Timestamp(nowMicros);
+    const argsBsatn = this.#encodeArgs(entry, args, intentId, clientTs);
 
-    const exec = executeReducer(this.store, entry.innerFn, args, {
+    const outcome = executeReducer(this.store, entry.innerFn, args, {
       sender: this.#identity,
       timestamp: clientTs,
       clientTimestamp: clientTs,
       connectionId: null,
       rng: this.#rng,
     });
-    if (exec.status === 'failed') throw exec.error;
-    if (exec.status === 'unpredicted' && options.strict) throw exec.error;
+    if (outcome.status === 'failed') throw outcome.error;
+    if (outcome.status === 'unpredicted' && options.strict === true) throw outcome.error;
 
-    const predicted = exec.status === 'predicted';
-    const rec: IntentRecord = {
-      intentId,
-      reducerName: entry.name,
-      accessorName: entry.accessorName,
-      argsBsatn,
-      clientTsMicros: now,
-      predicted,
-      readSet: predicted ? [...exec.readSet] : [],
-      writeSet: predicted ? [...exec.writeSet] : [],
-    };
-    const key = idKey(intentId);
+    const record = intentRecordFrom(entry, intentId, argsBsatn, nowMicros, outcome);
+    return this.#enqueue(record, args, outcome);
+  }
+
+  #encodeArgs(entry: ReducerEntry, args: Row, intentId: Uuid, clientTs: Timestamp): Uint8Array {
+    const fullArgs = entry.wrapped
+      ? { ...args, [INTENT_ID_PARAM]: intentId, [CLIENT_TS_PARAM]: clientTs }
+      : args;
+    const writer = new BinaryWriter(256);
+    entry.serialize(writer, fullArgs);
+    const bytes = writer.getBuffer();
+    if (bytes.length > INTENT_ARGS_BYTES_MAX) {
+      throw new LocalFirstError(`reducer arguments exceed ${INTENT_ARGS_BYTES_MAX} bytes`);
+    }
+    return bytes;
+  }
+
+  #enqueue(record: IntentRecord, args: Row, outcome: ExecOutcome): CallHandle {
+    const key = idKey(record.intentId);
+    assert(!this.log.pending.has(key), 'duplicate intent id');
     this.#userArgs.set(key, args);
-    this.#predictedNow.set(key, predicted);
-    if (predicted) {
-      const changed = this.store.applyToOverlay(exec.writes);
+    this.#predictedNow.set(key, record.predicted);
+    if (outcome.status === 'predicted') {
+      const changed = this.store.applyToOverlay(outcome.writes);
       this.store.notify(changed);
     }
-
-    const settled = new Promise<Exclude<IntentStatus, 'pending'>>(resolve => this.#settlers.set(key, resolve));
-    const durable = this.log.append(rec);
-    durable.catch(() => {
-      /* surfaced to the caller through the handle; intent stays in memory */
-    });
-    this.#emit({ type: 'queued', intent: rec, predicted });
+    const settled = new Promise<SettledStatus>(resolve => this.#settlers.set(key, resolve));
+    const durable = this.log.append(record);
+    durable.catch(() => undefined); // Surfaced through the handle; the intent stays in memory.
+    this.#emit({ type: 'queued', intent: record, predicted: record.predicted });
     this.#drain();
-    return { intentId, predicted, durable, settled };
+    return { intentId: record.intentId, predicted: record.predicted, durable, settled };
   }
 
   // -------------------------------------------------------------- linking
 
   connect(link: Link): void {
-    if (this.#closed) throw new LocalFirstError('LocalFirst is closed');
-    if (this.#link) this.disconnect();
+    assert(!this.#closed, 'connect() on a closed LocalFirst');
+    if (this.#link !== null) this.disconnect();
     this.#link = link;
-    this.#linkGen++;
-    if (link.identity) this.#identity = link.identity;
-    this.#drainReady = !this.#opts.beforeDrain;
-    if (this.#opts.beforeDrain) {
-      const gen = this.#linkGen;
-      Promise.resolve()
-        .then(() => this.#opts.beforeDrain!(this))
-        .then(
-          () => {
-            if (gen !== this.#linkGen) return;
-            this.#drainReady = true;
-            this.#drain();
-          },
-          err => console.warn('stdb-localfirst: beforeDrain failed; not sending until next connect', err)
-        );
-    }
-    this.#linkUnsubs.push(
-      link.events.onInitialState(tables => {
-        for (const [acc, rows] of tables) {
-          if (this.store.specs.has(acc)) this.store.replaceBase(acc, rows);
-        }
-        this.#lastServerTs = this.#clock();
-        this.#scheduleRebase();
-        this.#scheduleSnapshot();
-        this.#drain();
-      }),
-      link.events.onDelta((acc, delta) => {
-        if (!this.store.specs.has(acc)) return;
-        this.store.applyDelta(acc, delta);
-        this.#lastServerTs = this.#clock();
+    this.#linkGeneration += 1;
+    if (link.identity !== undefined) this.#identity = link.identity;
+    this.#linkUnsubscribes.push(
+      link.events.onInitialState(tables => this.#onInitialState(tables)),
+      link.events.onDelta((accessor, delta) => {
+        if (!this.store.specs.has(accessor)) return;
+        this.store.applyDelta(accessor, delta);
+        this.#serverTsMicrosLast = this.#clock();
         this.#scheduleRebase();
         this.#scheduleSnapshot();
       })
     );
+    this.#drainReady = this.#options.beforeDrain === undefined;
+    if (this.#options.beforeDrain !== undefined) this.#runBeforeDrain(this.#options.beforeDrain);
     this.#drain();
+  }
+
+  #onInitialState(tables: Map<string, Row[]>): void {
+    for (const [accessor, rows] of tables) {
+      if (this.store.specs.has(accessor)) this.store.replaceBase(accessor, rows);
+    }
+    this.#serverTsMicrosLast = this.#clock();
+    this.#scheduleRebase();
+    this.#scheduleSnapshot();
+    this.#drain();
+  }
+
+  #runBeforeDrain(hook: NonNullable<LocalFirstOptions['beforeDrain']>): void {
+    const generation = this.#linkGeneration;
+    Promise.resolve()
+      .then(() => hook(this))
+      .then(
+        () => {
+          if (generation !== this.#linkGeneration) return;
+          this.#drainReady = true;
+          this.#drain();
+        },
+        error =>
+          console.warn('stdb-localfirst: beforeDrain failed; not sending until next connect', error)
+      );
   }
 
   disconnect(): void {
     const link = this.#link;
-    if (!link) return;
+    if (link === null) return;
     this.#link = null;
-    this.#linkGen++;
+    this.#linkGeneration += 1;
+    this.#drainReady = false;
     // Anything in flight is now unknown: it will be resent, and the server's
     // applied_intents table makes the resend a no-op if it already ran.
     this.#inflight.clear();
-    for (const u of this.#linkUnsubs) u();
-    this.#linkUnsubs = [];
+    for (const unsubscribe of this.#linkUnsubscribes) unsubscribe();
+    this.#linkUnsubscribes = [];
     link.dispose();
+    assert(this.#inflight.size === 0, 'inflight must be empty after disconnect');
   }
 
   // ------------------------------------------------------------- syncing
 
+  /** Send pending intents in log order, at most `window` at a time. Bounded by pending count. */
   #drain(): void {
     const link = this.#link;
-    if (!link || this.#closed || !this.#drainReady) return;
-    for (const rec of this.log.pending.values()) {
+    if (link === null) return;
+    if (this.#closed) return;
+    if (!this.#drainReady) return;
+    for (const record of this.log.pending.values()) {
       if (this.#inflight.size >= this.#window) break;
-      const key = idKey(rec.intentId);
+      const key = idKey(record.intentId);
       if (this.#inflight.has(key)) continue;
-      this.#inflight.add(key);
-      const gen = this.#linkGen;
-      this.#emit({ type: 'sent', intent: rec });
-      link.transport.callReducer(rec.reducerName, rec.argsBsatn).then(
-        () => {
-          if (gen !== this.#linkGen) return;
-          this.#onAcked(rec);
-        },
-        err => {
-          if (gen !== this.#linkGen) return;
-          this.#onFailed(rec, err);
-        }
-      );
+      this.#send(link, record);
     }
+    assert(this.#inflight.size <= this.#window, 'inflight exceeds window');
   }
 
-  #settle(rec: IntentRecord, status: Exclude<IntentStatus, 'pending'>) {
-    const key = idKey(rec.intentId);
+  #send(link: Link, record: IntentRecord): void {
+    const key = idKey(record.intentId);
+    this.#inflight.add(key);
+    const generation = this.#linkGeneration;
+    this.#emit({ type: 'sent', intent: record });
+    link.transport.callReducer(record.reducerName, record.argsBsatn).then(
+      () => {
+        if (generation !== this.#linkGeneration) return;
+        this.#onAcked(record);
+      },
+      error => {
+        if (generation !== this.#linkGeneration) return;
+        this.#onFailed(record, error);
+      }
+    );
+  }
+
+  #settle(record: IntentRecord, status: SettledStatus): void {
+    const key = idKey(record.intentId);
+    assert(!this.log.pending.has(key), 'settling an intent that is still pending');
     this.#inflight.delete(key);
     this.#userArgs.delete(key);
     this.#predictedNow.delete(key);
-    const s = this.#settlers.get(key);
-    if (s) {
+    const settler = this.#settlers.get(key);
+    if (settler !== undefined) {
       this.#settlers.delete(key);
-      s(status);
+      settler(status);
     }
   }
 
-  #onAcked(rec: IntentRecord) {
-    if (!this.log.pending.has(idKey(rec.intentId))) return;
-    this.log.mark(rec.intentId, 'acked').catch(e => console.warn('stdb-localfirst: could not persist ack', e));
-    this.#settle(rec, 'acked');
-    this.#emit({ type: 'acked', intent: rec });
-    this.#scheduleRebase();
-    this.#maybeCompact();
-    this.#drain();
+  #onAcked(record: IntentRecord): void {
+    if (!this.log.pending.has(idKey(record.intentId))) return;
+    this.log
+      .mark(record.intentId, 'acked')
+      .catch(error => console.warn('stdb-localfirst: could not persist ack', error));
+    this.#settle(record, 'acked');
+    this.#emit({ type: 'acked', intent: record });
+    this.#afterSettled();
   }
 
-  #onFailed(rec: IntentRecord, err: unknown) {
-    if (!this.log.pending.has(idKey(rec.intentId))) return;
+  #onFailed(record: IntentRecord, error: unknown): void {
+    if (!this.log.pending.has(idKey(record.intentId))) return;
     const ordered = [...this.log.pending.values()];
     // Dependents already sent are the server's call now; only unsent ones are cancelled.
-    const deps = dependentsOf(rec, ordered).filter(d => !this.#inflight.has(idKey(d.intentId)));
-    const message = err instanceof Error ? err.message : String(err);
-    this.log.mark(rec.intentId, 'failed', message).catch(() => undefined);
-    this.#settle(rec, 'failed');
-    for (const d of deps) {
-      this.log.mark(d.intentId, 'cancelled', `depends on failed intent ${rec.intentId}`).catch(() => undefined);
-      this.#settle(d, 'cancelled');
-      this.#emit({ type: 'cancelled', intent: d, because: rec });
+    const dependents = dependentsOf(record, ordered).filter(
+      d => !this.#inflight.has(idKey(d.intentId))
+    );
+    const message = error instanceof Error ? error.message : String(error);
+    this.log.mark(record.intentId, 'failed', message).catch(() => undefined);
+    this.#settle(record, 'failed');
+    for (const dependent of dependents) {
+      this.log
+        .mark(dependent.intentId, 'cancelled', `depends on failed intent ${record.intentId}`)
+        .catch(() => undefined);
+      this.#settle(dependent, 'cancelled');
+      this.#emit({ type: 'cancelled', intent: dependent, because: record });
     }
-    this.#emit({ type: 'failed', intent: rec, error: err, cancelled: deps });
-    this.#scheduleRebase();
-    this.#maybeCompact();
-    this.#drain();
+    this.#emit({ type: 'failed', intent: record, error, cancelled: dependents });
+    this.#afterSettled();
   }
 
-  #maybeCompact() {
-    const every = this.#opts.compactEvery ?? 64;
+  #afterSettled(): void {
+    this.#scheduleRebase();
+    const every = this.#options.compactEvery ?? COMPACT_EVERY_MARKS_DEFAULT;
     if (this.log.pending.size === 0 && this.log.marksSinceCompact >= every) {
-      this.log.compact().catch(e => console.warn('stdb-localfirst: compaction failed', e));
+      this.log.compact().catch(error => console.warn('stdb-localfirst: compaction failed', error));
     }
+    this.#drain();
   }
 
   // -------------------------------------------------------------- rebase
 
-  #scheduleRebase() {
-    if (this.#rebaseScheduled || this.#closed) return;
+  #scheduleRebase(): void {
+    if (this.#rebaseScheduled) return;
+    if (this.#closed) return;
     this.#rebaseScheduled = true;
     queueMicrotask(() => {
       this.#rebaseScheduled = false;
@@ -441,19 +537,14 @@ export class LocalFirst {
     });
   }
 
-  #argsFor(rec: IntentRecord, entry: ReducerEntry): Row {
-    const key = idKey(rec.intentId);
-    let args = this.#userArgs.get(key);
-    if (!args) {
-      const full = entry.deserialize(new BinaryReader(rec.argsBsatn));
-      if (entry.wrapped) {
-        const { [INTENT_ID_PARAM]: _i, [CLIENT_TS_PARAM]: _c, ...rest } = full;
-        args = rest;
-      } else {
-        args = full;
-      }
-      this.#userArgs.set(key, args);
-    }
+  #argsFor(record: IntentRecord, entry: ReducerEntry): Row {
+    const key = idKey(record.intentId);
+    const cached = this.#userArgs.get(key);
+    if (cached !== undefined) return cached;
+    const full = entry.deserialize(new BinaryReader(record.argsBsatn));
+    const { [INTENT_ID_PARAM]: _intentId, [CLIENT_TS_PARAM]: _clientTs, ...rest } = full;
+    const args = entry.wrapped ? rest : full;
+    this.#userArgs.set(key, args);
     return args;
   }
 
@@ -463,59 +554,64 @@ export class LocalFirst {
    * decides, the client just stops guessing.
    */
   rebase(): void {
+    assert(this.log.pending.size <= REBASE_INTENTS_MAX, 'rebase over more intents than the bound');
     const changed = new Set(this.store.clearOverlay());
     let predicted = 0;
     let unpredicted = 0;
-    for (const rec of this.log.pending.values()) {
-      const key = idKey(rec.intentId);
-      const entry = this.#byAccessor.get(rec.accessorName);
-      if (!entry) {
-        this.#predictedNow.set(key, false);
-        unpredicted++;
-        continue;
-      }
-      const ts = new Timestamp(rec.clientTsMicros);
-      const exec = executeReducer(this.store, entry.innerFn, this.#argsFor(rec, entry), {
-        sender: this.#identity,
-        timestamp: ts,
-        clientTimestamp: ts,
-        connectionId: null,
-        rng: this.#rng,
-      });
-      if (exec.status === 'predicted') {
-        for (const acc of this.store.applyToOverlay(exec.writes)) changed.add(acc);
+    for (const record of this.log.pending.values()) {
+      const key = idKey(record.intentId);
+      const entry = this.#entriesByAccessor.get(record.accessorName);
+      const outcome = entry === undefined ? null : this.#replay(record, entry);
+      if (outcome !== null && outcome.status === 'predicted') {
+        for (const accessor of this.store.applyToOverlay(outcome.writes)) changed.add(accessor);
         this.#predictedNow.set(key, true);
-        predicted++;
+        predicted += 1;
       } else {
         this.#predictedNow.set(key, false);
-        unpredicted++;
+        unpredicted += 1;
       }
     }
+    assert(
+      predicted + unpredicted === this.log.pending.size,
+      'rebase must visit every pending intent'
+    );
     this.store.notify(changed);
     this.#emit({ type: 'rebase', predicted, unpredicted });
   }
 
+  #replay(record: IntentRecord, entry: ReducerEntry): ExecOutcome {
+    const timestamp = new Timestamp(record.clientTsMicros);
+    return executeReducer(this.store, entry.innerFn, this.#argsFor(record, entry), {
+      sender: this.#identity,
+      timestamp,
+      clientTimestamp: timestamp,
+      connectionId: null,
+      rng: this.#rng,
+    });
+  }
+
   // ------------------------------------------------------------ snapshot
 
-  #scheduleSnapshot() {
-    const ms = this.#opts.snapshotDebounceMs;
-    if (ms === null || ms === undefined && false) return;
-    const delay = ms ?? 2000;
-    const set = this.#opts.setTimer ?? ((fn, m) => setTimeout(fn, m));
-    const clear = this.#opts.clearTimer ?? (h => clearTimeout(h as any));
-    if (this.#snapshotTimer !== undefined) clear(this.#snapshotTimer);
-    this.#snapshotTimer = set(() => {
+  #scheduleSnapshot(): void {
+    const debounce = this.#options.snapshotDebounceMs;
+    if (debounce === null) return;
+    const delayMs = debounce ?? SNAPSHOT_DEBOUNCE_MS_DEFAULT;
+    const setTimer = this.#options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+    const clearTimer = this.#options.clearTimer ?? (handle => clearTimeout(handle as any));
+    if (this.#snapshotTimer !== undefined) clearTimer(this.#snapshotTimer);
+    this.#snapshotTimer = setTimer(() => {
       this.#snapshotTimer = undefined;
-      this.snapshotNow().catch(e => console.warn('stdb-localfirst: snapshot failed', e));
-    }, delay);
+      this.snapshotNow().catch(error => console.warn('stdb-localfirst: snapshot failed', error));
+    }, delayMs);
   }
 
   /** Write the base layer to disk now. */
   async snapshotNow(): Promise<SnapshotMeta> {
+    assert(!this.#closed, 'snapshotNow() on a closed LocalFirst');
     const tables = new Map<string, Iterable<Row>>();
-    for (const acc of this.#accessors) tables.set(acc, this.store.baseRows(acc));
-    return this.#snap.save(tables, {
-      serverTsMicros: this.#lastServerTs,
+    for (const accessor of this.#accessors) tables.set(accessor, this.store.baseRows(accessor));
+    return this.#snapshot.save(tables, {
+      serverTsMicros: this.#serverTsMicrosLast,
       workingSetHash: this.#workingSetHash,
     });
   }
@@ -523,47 +619,90 @@ export class LocalFirst {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    const clear = this.#opts.clearTimer ?? (h => clearTimeout(h as any));
-    if (this.#snapshotTimer !== undefined) clear(this.#snapshotTimer);
+    const clearTimer = this.#options.clearTimer ?? (handle => clearTimeout(handle as any));
+    if (this.#snapshotTimer !== undefined) clearTimer(this.#snapshotTimer);
     this.disconnect();
     await this.log.flush();
+    const release = this.#releaseLock;
+    this.#releaseLock = null;
+    if (release !== null) await release();
+    assert(this.#link === null, 'link must be gone after close');
   }
+}
 
-  // ----------------------------------------------------------- read view
+// ------------------------------------------------------------------ helpers
 
-  #buildReadView(): Record<string, any> {
-    const view: Record<string, any> = Object.create(null);
-    for (const acc of this.#accessors) {
-      const spec = this.store.spec(acc);
-      const store = this.store;
-      const table: Record<string, any> = {
-        iter: () => store.iter(acc),
-        [Symbol.iterator]: () => store.iter(acc),
-        count: () => BigInt(store.count(acc)),
-      };
-      for (const idx of spec.indexes) {
-        const getKey = (row: Row) => idx.columns.map(c => row[c]);
-        if (idx.unique) {
-          table[idx.name] = Object.freeze({
-            find: (colVal: any): Row | null => {
-              const expected = Array.isArray(colVal) ? colVal : [colVal];
-              if (idx.isPrimaryKey) {
-                return store.get(acc, spec.rowKey({ [spec.primaryKey!]: expected[0] })) ?? null;
-              }
-              for (const row of store.iter(acc)) if (deepEqual(getKey(row), expected)) return row;
-              return null;
-            },
-          });
-        } else {
-          table[idx.name] = Object.freeze({
-            *filter(range: any): IterableIterator<Row> {
-              for (const row of store.iter(acc)) if (matchRange(getKey(row), range)) yield row;
-            },
-          });
-        }
+function workingSetText(workingSet: WorkingSet): string {
+  if (typeof workingSet.queries === 'function') return workingSet.queries.toString();
+  return workingSet.queries.join('\n');
+}
+
+async function acquireLock(storage: StorageAdapter): Promise<(() => Promise<void>) | null> {
+  if (storage.lock === undefined) return null;
+  const release = await storage.lock();
+  if (release === null) {
+    throw new LocalFirstError(
+      'storage is locked by another LocalFirst instance (another tab or process)'
+    );
+  }
+  return release;
+}
+
+function intentRecordFrom(
+  entry: ReducerEntry,
+  intentId: Uuid,
+  argsBsatn: Uint8Array,
+  clientTsMicros: bigint,
+  outcome: ExecOutcome
+): IntentRecord {
+  assert(outcome.status !== 'failed', 'failed outcomes never become intents');
+  const predicted = outcome.status === 'predicted';
+  return {
+    intentId,
+    reducerName: entry.name,
+    accessorName: entry.accessorName,
+    argsBsatn,
+    clientTsMicros,
+    predicted,
+    readSet: predicted ? [...outcome.readSet] : [],
+    writeSet: predicted ? [...outcome.writeSet] : [],
+  };
+}
+
+/** Read-only merged view (`lf.db`): iter/count plus find/filter per index. */
+function buildReadView(store: LocalStore, accessors: string[]): Record<string, any> {
+  const view: Record<string, any> = Object.create(null);
+  for (const accessor of accessors) {
+    const spec = store.spec(accessor);
+    const table: Record<string, any> = {
+      iter: () => store.iter(accessor),
+      [Symbol.iterator]: () => store.iter(accessor),
+      count: () => BigInt(store.count(accessor)),
+    };
+    for (const index of spec.indexes) {
+      const indexKey = (row: Row): unknown[] => index.columns.map(column => row[column]);
+      if (index.unique) {
+        table[index.name] = Object.freeze({
+          find: (columnValue: unknown): Row | null => {
+            const expected = Array.isArray(columnValue) ? columnValue : [columnValue];
+            if (index.isPrimaryKey) {
+              const pk = assertDefined(spec.primaryKey, 'pk index without pk');
+              return store.get(accessor, spec.rowKey({ [pk]: expected[0] })) ?? null;
+            }
+            for (const row of store.iter(accessor))
+              if (deepEqual(indexKey(row), expected)) return row;
+            return null;
+          },
+        });
+      } else {
+        table[index.name] = Object.freeze({
+          *filter(range: unknown): IterableIterator<Row> {
+            for (const row of store.iter(accessor)) if (matchRange(indexKey(row), range)) yield row;
+          },
+        });
       }
-      view[acc] = Object.freeze(table);
     }
-    return Object.freeze(view);
+    view[accessor] = Object.freeze(table);
   }
+  return Object.freeze(view);
 }

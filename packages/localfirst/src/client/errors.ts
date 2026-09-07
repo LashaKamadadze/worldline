@@ -1,6 +1,9 @@
 /** Thrown by the local store when a reducer body cannot be predicted on this client. */
 export class UnpredictableError extends Error {
-  constructor(readonly reason: string, message?: string) {
+  constructor(
+    readonly reason: string,
+    message?: string
+  ) {
     super(message ?? `cannot predict locally: ${reason}`);
     this.name = 'UnpredictableError';
   }
@@ -11,7 +14,10 @@ export class UnpredictableError extends Error {
  * `null` there means "unknown", not "absent", so prediction must stop.
  */
 export class CacheMissError extends UnpredictableError {
-  constructor(readonly table: string, readonly key: string) {
+  constructor(
+    readonly table: string,
+    readonly key: string
+  ) {
     super('cache-miss', `cache miss on ${table} (${key}); table coverage is partial`);
     this.name = 'CacheMissError';
   }

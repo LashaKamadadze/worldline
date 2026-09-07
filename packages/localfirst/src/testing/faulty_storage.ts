@@ -14,7 +14,13 @@ export interface FaultPlan {
   readFail: number;
 }
 
-export const NO_FAULTS: FaultPlan = { appendFail: 0, appendTorn: 0, writeFail: 0, writeTorn: 0, readFail: 0 };
+export const NO_FAULTS: FaultPlan = {
+  appendFail: 0,
+  appendTorn: 0,
+  writeFail: 0,
+  writeTorn: 0,
+  readFail: 0,
+};
 
 export interface FaultStats {
   appendFail: number;
@@ -24,10 +30,16 @@ export interface FaultStats {
   readFail: number;
 }
 
-/** In-memory storage that misbehaves according to a seeded plan. `clone()` = what a crash leaves on disk. */
+/** In-memory storage that misbehaves per a seeded plan. `crash()` = what a crash leaves on disk. */
 export class FaultyStorage extends MemoryStorage {
   plan: FaultPlan;
-  readonly stats: FaultStats = { appendFail: 0, appendTorn: 0, writeFail: 0, writeTorn: 0, readFail: 0 };
+  readonly stats: FaultStats = {
+    appendFail: 0,
+    appendTorn: 0,
+    writeFail: 0,
+    writeTorn: 0,
+    readFail: 0,
+  };
   #rng: SeededRng;
 
   constructor(rng: SeededRng, plan: FaultPlan = NO_FAULTS) {

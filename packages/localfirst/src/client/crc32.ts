@@ -12,7 +12,9 @@ const TABLE = (() => {
 export function crc32(bytes: Uint8Array, seed = 0): number {
   let c = (seed ^ 0xffffffff) >>> 0;
   for (let i = 0; i < bytes.length; i++) {
-    c = TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    const byte = bytes[i] ?? 0;
+    const index = (c ^ byte) & 0xff; // always 0..255, inside TABLE
+    c = (TABLE[index] as number) ^ (c >>> 8);
   }
   return (c ^ 0xffffffff) >>> 0;
 }

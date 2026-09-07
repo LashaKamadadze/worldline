@@ -47,7 +47,10 @@ export function createSdkLink(
       emitDelta(acc, { inserts: [newRow], deletes: [oldRow] });
     table.onInsert(onIns);
     table.onDelete(onDel);
-    unsubs.push(() => table.removeOnInsert(onIns), () => table.removeOnDelete(onDel));
+    unsubs.push(
+      () => table.removeOnInsert(onIns),
+      () => table.removeOnDelete(onDel)
+    );
     if (typeof table.onUpdate === 'function') {
       try {
         table.onUpdate(onUpd);

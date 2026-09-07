@@ -12,7 +12,7 @@ export class CryptoRng implements Rng {
   #buf = new Uint32Array(1);
   u32(): number {
     globalThis.crypto.getRandomValues(this.#buf);
-    return this.#buf[0];
+    return this.#buf[0] as number; // length-1 array, index 0 always exists
   }
   float(): number {
     return this.u32() / 4294967296;
@@ -25,7 +25,10 @@ export class CryptoRng implements Rng {
 
 /** xoshiro128** seeded RNG. Deterministic for a given seed. */
 export class SeededRng implements Rng {
-  #s: Uint32Array;
+  #s0: number;
+  #s1: number;
+  #s2: number;
+  #s3: number;
   constructor(seed: number) {
     // splitmix32 to expand the seed
     let x = seed >>> 0;
@@ -36,19 +39,21 @@ export class SeededRng implements Rng {
       z = Math.imul(z ^ (z >>> 15), 0x735a2d97);
       return (z ^ (z >>> 15)) >>> 0;
     };
-    this.#s = new Uint32Array([next(), next(), next(), next()]);
-    if (this.#s.every(v => v === 0)) this.#s[0] = 1;
+    this.#s0 = next();
+    this.#s1 = next();
+    this.#s2 = next();
+    this.#s3 = next();
+    if ((this.#s0 | this.#s1 | this.#s2 | this.#s3) === 0) this.#s0 = 1;
   }
   u32(): number {
-    const s = this.#s;
-    const result = (Math.imul(rotl(Math.imul(s[1], 5) >>> 0, 7), 9) >>> 0);
-    const t = (s[1] << 9) >>> 0;
-    s[2] ^= s[0];
-    s[3] ^= s[1];
-    s[1] ^= s[2];
-    s[0] ^= s[3];
-    s[2] ^= t;
-    s[3] = rotl(s[3], 11);
+    const result = Math.imul(rotl(Math.imul(this.#s1, 5) >>> 0, 7), 9) >>> 0;
+    const t = (this.#s1 << 9) >>> 0;
+    this.#s2 = (this.#s2 ^ this.#s0) >>> 0;
+    this.#s3 = (this.#s3 ^ this.#s1) >>> 0;
+    this.#s1 = (this.#s1 ^ this.#s2) >>> 0;
+    this.#s0 = (this.#s0 ^ this.#s3) >>> 0;
+    this.#s2 = (this.#s2 ^ t) >>> 0;
+    this.#s3 = rotl(this.#s3, 11);
     return result;
   }
   float(): number {
@@ -65,7 +70,8 @@ export class SeededRng implements Rng {
     return this.float() < p;
   }
   pick<T>(arr: readonly T[]): T {
-    return arr[this.int(0, arr.length - 1)];
+    if (arr.length === 0) throw new Error('pick from an empty array');
+    return arr[this.int(0, arr.length - 1)] as T;
   }
 }
 

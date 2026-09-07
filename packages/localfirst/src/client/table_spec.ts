@@ -1,4 +1,5 @@
 import { AlgebraicType, BinaryReader, BinaryWriter, ProductType } from 'spacetimedb';
+import { assert } from '../shared/assert';
 
 export type Row = Record<string, any>;
 export type Key = string | number | bigint | boolean;
@@ -62,57 +63,36 @@ function sentinelFor(tag: string): 0 | 0n {
  * generated client bindings' remote module).
  */
 export function tableSpecFromDef(def: any, namespace?: string): TableSpec {
+  assert(typeof def?.sourceName === 'string' && def.sourceName.length > 0, 'def needs sourceName');
+  assert(
+    typeof def?.accessorName === 'string' && def.accessorName.length > 0,
+    'def needs accessor'
+  );
+  assert(def?.rowType?.elements !== undefined, `table ${def?.sourceName} has no row type`);
   const rowType = def.rowType;
   const elements: { name: string; algebraicType: any }[] = rowType.elements;
   const columnNames = elements.map(e => e.name);
-  const colType = (name: string) =>
-    elements.find(e => e.name === name)?.algebraicType;
+  const colType = (name: string) => elements.find(e => e.name === name)?.algebraicType;
 
-  const columns: Record<string, any> = def.columns ?? {};
-  let primaryKey: string | null = null;
-  const uniqueColumnSets: string[][] = [];
-  const autoInc: AutoIncSpec[] = [];
-  for (const [name, col] of Object.entries(columns)) {
-    const md = (col as any).columnMetadata ?? {};
-    if (md.isPrimaryKey) primaryKey = name;
-    if (md.isPrimaryKey || md.isUnique) uniqueColumnSets.push([name]);
-    if (md.isAutoIncrement) {
-      autoInc.push({ column: name, sentinel: sentinelFor(colType(name)?.tag) });
-    }
+  const { primaryKey, uniqueColumnSets, autoInc } = columnConstraints(def, colType);
+  const indexes = indexSpecs(def, primaryKey, uniqueColumnSets);
+  assert(primaryKey === null || columnNames.includes(primaryKey), 'primary key must be a column');
+  for (const idx of indexes) {
+    assert(
+      idx.columns.every(c => columnNames.includes(c)),
+      `index ${idx.name} uses unknown columns`
+    );
   }
-  for (const c of def.constraints ?? []) {
-    if (c.constraint === 'unique') {
-      const cols = [...c.columns] as string[];
-      if (!uniqueColumnSets.some(s => sameColumns(s, cols))) uniqueColumnSets.push(cols);
-    }
-  }
-
-  const indexes: IndexSpec[] = (def.resolvedIndexes ?? []).map((idx: any) => {
-    const cols = [...idx.columns] as string[];
-    const unique =
-      idx.unique === true || uniqueColumnSets.some(s => sameColumns(s, cols));
-    return {
-      name: idx.name,
-      columns: cols,
-      algorithm: idx.algorithm,
-      unique,
-      isPrimaryKey: primaryKey !== null && sameColumns(cols, [primaryKey]),
-    };
-  });
 
   const serializeRow = ProductType.makeSerializer(rowType);
   const deserializeRow = ProductType.makeDeserializer(rowType);
   const primaryKeyType = primaryKey ? colType(primaryKey) : null;
-
   const rowKey = (row: Row): Key => {
-    if (primaryKey) {
-      return AlgebraicType.intoMapKey(primaryKeyType, row[primaryKey]) as Key;
-    }
+    if (primaryKey) return AlgebraicType.intoMapKey(primaryKeyType, row[primaryKey]);
     const w = new BinaryWriter(64);
     serializeRow(w, row);
     return w.toBase64();
   };
-
   const fingerprint = JSON.stringify({
     s: def.sourceName,
     e: elements.map(e => [e.name, e.algebraicType]),
@@ -135,6 +115,49 @@ export function tableSpecFromDef(def: any, namespace?: string): TableSpec {
     deserializeRow,
     rowKey,
   };
+}
+
+/** Primary key, unique column sets and auto-increment columns from the table definition. */
+function columnConstraints(
+  def: any,
+  colType: (name: string) => any
+): { primaryKey: string | null; uniqueColumnSets: string[][]; autoInc: AutoIncSpec[] } {
+  const columns: Record<string, any> = def.columns ?? {};
+  let primaryKey: string | null = null;
+  const uniqueColumnSets: string[][] = [];
+  const autoInc: AutoIncSpec[] = [];
+  for (const [name, col] of Object.entries(columns)) {
+    const md = col.columnMetadata ?? {};
+    if (md.isPrimaryKey) primaryKey = name;
+    if (md.isPrimaryKey || md.isUnique) uniqueColumnSets.push([name]);
+    if (md.isAutoIncrement) {
+      autoInc.push({ column: name, sentinel: sentinelFor(colType(name)?.tag) });
+    }
+  }
+  for (const c of def.constraints ?? []) {
+    if (c.constraint !== 'unique') continue;
+    const cols = [...c.columns] as string[];
+    if (!uniqueColumnSets.some(s => sameColumns(s, cols))) uniqueColumnSets.push(cols);
+  }
+  return { primaryKey, uniqueColumnSets, autoInc };
+}
+
+function indexSpecs(
+  def: any,
+  primaryKey: string | null,
+  uniqueColumnSets: string[][]
+): IndexSpec[] {
+  return (def.resolvedIndexes ?? []).map((idx: any): IndexSpec => {
+    const cols = [...idx.columns] as string[];
+    const unique = idx.unique === true || uniqueColumnSets.some(s => sameColumns(s, cols));
+    return {
+      name: idx.name,
+      columns: cols,
+      algorithm: idx.algorithm,
+      unique,
+      isPrimaryKey: primaryKey !== null && sameColumns(cols, [primaryKey]),
+    };
+  });
 }
 
 /** Build specs for every table in a server `schema()` object (`mod.default`). */

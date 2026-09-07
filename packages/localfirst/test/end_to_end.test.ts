@@ -17,7 +17,13 @@ function world(seed = 1) {
   const sched = new VirtualScheduler();
   sched.timeMicros = 1_700_000_000_000_000n;
   const clock = () => sched.timeMicros;
-  const server = new FakeServer(mod as any, bindings, { lf: localfirst }, clock, new SeededRng(seed + 1));
+  const server = new FakeServer(
+    mod as any,
+    bindings,
+    { lf: localfirst },
+    clock,
+    new SeededRng(seed + 1)
+  );
   const identity = new Identity(42n);
   const storage = new FaultyStorage(new SeededRng(seed + 2));
   const open = async (st = storage) =>
@@ -54,13 +60,13 @@ describe('end to end against the fake server', () => {
     await w.sched.runUntilIdle();
     expect(await h.settled).toBe('acked');
     expect(lf.pending().length).toBe(0);
-    expect(w.server.snapshot().get('todos')![0].done).toBe(true);
+    expect(w.server.snapshot().get('todos')![0]!.done).toBe(true);
     expect(lf.db.todos.id.find(id)?.done).toBe(true);
     expect(lf.store.hasOverlay()).toBe(false);
     await lf.close();
   });
 
-  it('survives a restart: pending intents replay from the log and are then delivered once', async () => {
+  it('survives a restart: pending intents replay from the log, then deliver once', async () => {
     const w = world(7);
     let lf = await w.open();
     const id = new Uuid(5n);
@@ -79,7 +85,7 @@ describe('end to end against the fake server', () => {
     lf.connect(link);
     await w.sched.runUntilIdle();
     expect(lf.pending().length).toBe(0);
-    expect(w.server.snapshot().get('counters')![0].value).toBe(2n);
+    expect(w.server.snapshot().get('counters')![0]!.value).toBe(2n);
     expect(w.server.effectRuns.size).toBe(2);
     await lf.close();
   });
@@ -147,7 +153,9 @@ describe('end to end against the fake server', () => {
   it('rejects locally what the server would reject', async () => {
     const w = world(17);
     const lf = await w.open();
-    expect(() => lf.call(mod.createTodo, { id: new Uuid(1n), title: '' })).toThrow('title must not be empty');
+    expect(() => lf.call(mod.createTodo, { id: new Uuid(1n), title: '' })).toThrow(
+      'title must not be empty'
+    );
     expect(() => lf.call(mod.toggleTodo, { id: new Uuid(404n) })).toThrow('no such todo');
     expect(lf.pending().length).toBe(0);
     await lf.close();
@@ -159,7 +167,10 @@ describe('end to end against the fake server', () => {
       module: mod as any,
       reducers: bindings,
       storage: w.storage,
-      workingSet: { queries: ['SELECT * FROM todos WHERE done = false'], coverage: { todos: 'partial' } },
+      workingSet: {
+        queries: ['SELECT * FROM todos WHERE done = false'],
+        coverage: { todos: 'partial' },
+      },
       identity: w.identity,
       clock: () => w.sched.timeMicros,
       snapshotDebounceMs: null,
@@ -204,7 +215,9 @@ describe('options', () => {
       clock: () => w.sched.timeMicros,
       snapshotDebounceMs: null,
     });
-    expect(() => lf.call(mod.toggleTodo, { id: new Uuid(1n) }, { strict: true })).toThrow(/cache miss/);
+    expect(() => lf.call(mod.toggleTodo, { id: new Uuid(1n) }, { strict: true })).toThrow(
+      /cache miss/
+    );
     expect(lf.pending().length).toBe(0);
     await lf.close();
   });

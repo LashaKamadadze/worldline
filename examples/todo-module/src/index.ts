@@ -39,7 +39,13 @@ export const createTodo = offlineReducer(
   { id: t.uuid(), title: t.string() },
   (ctx, { id, title }) => {
     if (title.trim().length === 0) throw new Error('title must not be empty');
-    ctx.db.todos.insert({ id, owner: ctx.sender, title, done: false, createdAt: ctx.clientTimestamp });
+    ctx.db.todos.insert({
+      id,
+      owner: ctx.sender,
+      title,
+      done: false,
+      createdAt: ctx.clientTimestamp,
+    });
   }
 );
 
