@@ -43,6 +43,28 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/live-tests:
+    dependencies:
+      spacetimedb:
+        specifier: 2.10.0
+        version: 2.10.0
+      stdb-localfirst:
+        specifier: workspace:*
+        version: link:../localfirst
+      todo-module:
+        specifier: workspace:*
+        version: link:../../examples/todo-module
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@24.13.3)
+
   packages/localfirst:
     devDependencies:
       '@types/node':
