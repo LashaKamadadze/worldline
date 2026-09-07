@@ -10,14 +10,9 @@ const sysShimPlugin = {
   name: 'spacetime-sys-shim',
   setup(b: any) {
     b.onResolve({ filter: /^spacetime:sys@/ }, () => ({ path: SHIM }));
-    // `stdb-localfirst/client` re-exports NodeFsStorage, which imports `node:*`
-    // modules. In a browser bundle they must resolve to an empty stub; the class
-    // itself is never referenced by page code and is tree-shaken away.
-    b.onResolve({ filter: /^node:/ }, (args: { path: string }) => ({ path: args.path, namespace: 'node-stub' }));
-    b.onLoad({ filter: /.*/, namespace: 'node-stub' }, () => ({
-      contents: 'export const open = undefined, mkdir = undefined, readFile = undefined, rename = undefined, rm = undefined, writeFile = undefined, join = undefined;',
-      loader: 'js',
-    }));
+    // No node:* stubs on purpose: the browser bundle must prove that
+    // 'stdb-localfirst/client' has no Node imports (NodeFsStorage lives in
+    // 'stdb-localfirst/client/node').
     // `spacetimedb/server` ships a url-polyfill shim that does
     // `globalThis.window = globalThis.window || globalThis`. Fine in the host
     // and in Node, but in a browser `window` is a getter-only global and the

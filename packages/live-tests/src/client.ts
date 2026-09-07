@@ -9,12 +9,12 @@ import { join } from 'node:path';
 import { Identity, Uuid } from 'spacetimedb';
 import {
   LocalFirst,
-  NodeFsStorage,
   createSdkLink,
   type IntentEvent,
   type LocalFirstOptions,
   type WorkingSet,
 } from 'stdb-localfirst/client';
+import { NodeFsStorage } from 'stdb-localfirst/client/node';
 import * as mod from 'todo-module';
 import { DbConnection, reducers } from '../generated/index';
 

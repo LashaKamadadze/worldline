@@ -4,6 +4,7 @@ import {
   MemoryStorage,
   OpfsStorage,
   createSdkLink,
+  type AnyReducer,
   type IntentEvent,
   type StorageAdapter,
   type WorkingSet,
@@ -24,7 +25,13 @@ let conn: DbConnection | null = null;
 const events: string[] = [];
 const settledIds = new Set<string>();
 
-const REDUCERS: Record<string, Function> = {
+function reducerNamed(name: string): AnyReducer {
+  const reducer = REDUCERS[name];
+  if (reducer === undefined) throw new Error(`unknown reducer ${name}`);
+  return reducer;
+}
+
+const REDUCERS: Record<string, AnyReducer> = {
   createTodo: mod.createTodo,
   toggleTodo: mod.toggleTodo,
   deleteTodo: mod.deleteTodo,
@@ -79,7 +86,7 @@ function storageFor(dir: string): StorageAdapter {
 
   async call(name: string, args: Record<string, string>) {
     if (!lf) throw new Error('not open');
-    const handle = lf.call(REDUCERS[name], decodeArgs(name, args));
+    const handle = lf.call(reducerNamed(name), decodeArgs(name, args));
     let durable: 'ok' | 'rejected' = 'ok';
     await handle.durable.catch(() => (durable = 'rejected'));
     return { intentId: handle.intentId.toString(), predicted: handle.predicted, durable };
@@ -88,7 +95,7 @@ function storageFor(dir: string): StorageAdapter {
   callExpectThrow(name: string, args: Record<string, string>) {
     if (!lf) throw new Error('not open');
     try {
-      lf.call(REDUCERS[name], decodeArgs(name, args));
+      lf.call(reducerNamed(name), decodeArgs(name, args));
       return null;
     } catch (e) {
       return (e as Error).name + ': ' + (e as Error).message;

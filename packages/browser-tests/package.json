@@ -6,7 +6,8 @@
   "description": "Headless-browser tests for stdb-localfirst (OPFS adapter and full sync against a real local SpacetimeDB)",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pretypecheck": "spacetime generate --yes --lang typescript --out-dir generated/module_bindings --module-path ../../examples/todo-module"
   },
   "dependencies": {
     "spacetimedb": "2.10.0",

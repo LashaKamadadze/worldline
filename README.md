@@ -108,7 +108,7 @@ Reads: `lf.db.todos.iter()`, `lf.db.todos.id.find(id)`, or reactive
 
 - Intent log: framed `[len][crc32][payload]` records, two slots with generation header and commit marker. Compaction writes the other slot and switches only on success, so a torn rewrite never loses a durable intent. A failed append marks the slot dirty and the next write moves to a fresh slot.
 - Snapshot: base layer only (server-confirmed rows), two slots, highest valid generation wins. Predicted rows are rebuilt from the log on boot, never snapshotted.
-- Storage adapters: memory, Node files (append + fsync, temp + rename), OPFS (sync access handle in a worker, writable stream on the main thread).
+- Storage adapters: memory, Node files via `stdb-localfirst/client/node` (append + fsync, temp + rename), OPFS (sync access handle in a worker, writable stream on the main thread).
 
 ## Testing
 

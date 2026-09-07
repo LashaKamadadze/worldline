@@ -10,7 +10,8 @@
  */
 import { rm } from 'node:fs/promises';
 import { Uuid } from 'spacetimedb';
-import { LocalFirst, NodeFsStorage, createSdkLink, type WorkingSet } from 'stdb-localfirst/client';
+import { LocalFirst, createSdkLink, type WorkingSet } from 'stdb-localfirst/client';
+import { NodeFsStorage } from 'stdb-localfirst/client/node';
 import * as mod from 'todo-module';
 import { DbConnection, reducers } from './module_bindings';
 

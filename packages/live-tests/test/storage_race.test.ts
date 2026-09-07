@@ -13,7 +13,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { NodeFsStorage } from 'stdb-localfirst/client';
+import { NodeFsStorage } from 'stdb-localfirst/client/node';
 
 describe('NodeFsStorage', () => {
   it('concurrent writes of the same file both succeed and leave a whole file', async () => {

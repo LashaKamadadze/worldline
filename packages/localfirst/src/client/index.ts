@@ -5,6 +5,7 @@ export {
   type CallHandle,
   type IntentEvent,
   type ReducerBinding,
+  type AnyReducer,
 } from './local_first';
 export {
   tableStore,

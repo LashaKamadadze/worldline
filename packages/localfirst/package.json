@@ -14,6 +14,10 @@
       "types": "./src/client/index.ts",
       "default": "./src/client/index.ts"
     },
+    "./client/node": {
+      "types": "./src/client/node.ts",
+      "default": "./src/client/node.ts"
+    },
     "./sys-shim": {
       "types": "./src/sys-shim/index.ts",
       "default": "./src/sys-shim/index.ts"
