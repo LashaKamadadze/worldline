@@ -15,6 +15,9 @@ click ──► run reducer locally ──► overlay (predicted rows) ──►
 
 ## What is where
 
+Design, invariants, limits and threat model: [docs/DESIGN.md](docs/DESIGN.md).
+
+
 | Path | Purpose |
 |---|---|
 | `packages/localfirst/src/server` | Submodule (`applied_intents`, purge schedule) and the `offlineReducer()` wrapper |
@@ -141,5 +144,5 @@ had no server effects, and every client's merged view equals the server's.
 
 - Reconnect re-downloads the whole working set; SpacetimeDB has no "changes since" resume.
 - OPFS adapter is written against the spec but has not been run in a browser here.
-- One process per storage directory; concurrent tabs are not coordinated.
+- One writer per storage directory: a second `open()` on the same directory fails with `LockHeldError` (pid lock file in Node, Web Locks in browsers). Read-only mirrors in other tabs are not provided.
 - Row-level security filters inside submodules are ignored by the host today, so the submodule keeps `applied_intents` private instead.
