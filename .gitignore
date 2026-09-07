@@ -8,3 +8,5 @@ examples/todo-client/src/module_bindings/
 *.log
 .DS_Store
 .claude/
+packages/browser-tests/generated/
+packages/browser-tests/dist/

@@ -61,7 +61,15 @@
                 # General tooling
                 git
                 jq
+
+                # Headless browsers for packages/browser-tests (Playwright 1.61.x build).
+                playwright-driver.browsers
               ]);
+
+            # Playwright must use the nix-provided browsers (no downloads, matching driver version).
+            PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+            PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
 
             shellHook = ''
               export PNPM_HOME="$PWD/.pnpm-home"

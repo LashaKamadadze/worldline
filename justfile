@@ -47,3 +47,7 @@ integration: publish demo
 # Live tests against real, isolated SpacetimeDB servers (random ports, temp dirs; no server needed)
 live-test *args:
     packages/live-tests/scripts/test.sh {{args}}
+
+# Headless-browser tests (Playwright from nixpkgs): OPFS adapter + full sync in Chromium/Firefox/WebKit
+browser-test:
+    pnpm --filter browser-tests test
