@@ -23,7 +23,8 @@ function walk(root) {
   while (stack.length > 0) {
     const dir = stack.pop();
     for (const entry of readdirSync(dir)) {
-      if (entry === 'node_modules' || entry === 'dist' || entry === 'module_bindings') continue;
+      const skip = ['node_modules', 'dist', 'module_bindings', 'generated'];
+      if (skip.includes(entry)) continue;
       if (entry.startsWith('.')) continue;
       const path = join(dir, entry);
       if (statSync(path).isDirectory()) stack.push(path);
@@ -92,7 +93,7 @@ function checkFile(path, isSource) {
 }
 
 for (const root of roots) {
-  const isSource = !/(^|\/)test(s)?(\/|$)/.test(root);
+  const isSource = !/(^|\/)(test(s)?|live-tests|browser-tests)(\/|$)/.test(root);
   for (const file of walk(root)) checkFile(file, isSource);
 }
 

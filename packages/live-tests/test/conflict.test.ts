@@ -9,7 +9,17 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveServer, waitFor } from '../src/fixture';
-import { attach, connect, drained, localView, mod, openLocal, serverView, sleep, uuid } from '../src/client';
+import {
+  attach,
+  connect,
+  drained,
+  localView,
+  mod,
+  openLocal,
+  serverView,
+  sleep,
+  uuid,
+} from '../src/client';
 
 let server: LiveServer;
 
@@ -23,7 +33,8 @@ afterAll(async () => {
 });
 
 describe('conflicting offline edits', () => {
-  it('same key created by two clients: loser fails, its dependents are cancelled, both converge', async () => {
+  const title = 'same key from two clients: loser fails, dependents cancel, both converge';
+  it(title, async () => {
     const a = await openLocal();
     const b = await openLocal();
     const id = uuid();
@@ -35,12 +46,20 @@ describe('conflicting offline edits', () => {
     await Promise.all([bCreate.durable, aCreate.durable, aToggle.durable, aBump.durable]);
     expect(a.lf.pending().length).toBe(3);
 
-    const cb = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => b.lf.disconnect() });
+    const cb = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => b.lf.disconnect(),
+    });
     attach(b.lf, cb.conn);
     expect(await bCreate.settled).toBe('acked');
     await drained(b.lf);
 
-    const ca = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => a.lf.disconnect() });
+    const ca = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => a.lf.disconnect(),
+    });
     attach(a.lf, ca.conn);
     expect(await aCreate.settled).toBe('failed');
     expect(await aToggle.settled).toBe('cancelled');
@@ -58,7 +77,7 @@ describe('conflicting offline edits', () => {
     expect(localView(a.lf)).toEqual(serverView(ca.conn));
     expect(localView(b.lf)).toEqual(serverView(cb.conn));
     expect([...a.lf.db.todos.iter()].map((t: any) => t.title)).toEqual(['B was first']);
-    expect((a.lf.db.counters.name.find('independent') as any).value).toBe(5n);
+    expect(a.lf.db.counters.name.find('independent').value).toBe(5n);
     expect(await server.sqlCount('lf.applied_intents')).toBe(2);
 
     ca.conn.disconnect();
@@ -72,13 +91,21 @@ describe('conflicting offline edits', () => {
     const b = await openLocal();
     const id = uuid();
 
-    const cb = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => b.lf.disconnect() });
+    const cb = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => b.lf.disconnect(),
+    });
     attach(b.lf, cb.conn);
     await b.lf.call(mod.createTodo, { id, title: 'doomed' }).settled;
     await drained(b.lf);
 
     // A comes online, caches the todo, then goes offline.
-    let ca = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => a.lf.disconnect() });
+    let ca = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => a.lf.disconnect(),
+    });
     attach(a.lf, ca.conn);
     await drained(a.lf);
     // `drained` only covers the outbound queue; the initial subscription state is inbound.
@@ -91,9 +118,14 @@ describe('conflicting offline edits', () => {
 
     const toggle = a.lf.call(mod.toggleTodo, { id });
     expect(toggle.predicted).toBe(true);
-    expect((a.lf.db.todos.id.find(id) as any).done).toBe(true);
+    expect(a.lf.db.todos.id.find(id).done).toBe(true);
 
-    ca = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', token: ca.token, onDisconnect: () => a.lf.disconnect() });
+    ca = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      token: ca.token,
+      onDisconnect: () => a.lf.disconnect(),
+    });
     attach(a.lf, ca.conn);
     expect(await toggle.settled).toBe('failed');
     await drained(a.lf);

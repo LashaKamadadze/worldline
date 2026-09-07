@@ -11,6 +11,15 @@ install:
 typecheck:
     pnpm -r typecheck
 
+# TigerStyle checks (function length, line width, no recursion) plus eslint
+lint:
+    node scripts/check_style.mjs packages/localfirst/src packages/localfirst/test packages/live-tests scripts examples
+    pnpm exec eslint .
+
+# Typecheck, lint, format check
+check: typecheck lint
+    pnpm exec prettier --check "packages/*/src/**/*.ts" "packages/*/test/**/*.ts" "examples/**/*.ts"
+
 # Unit, end-to-end (fake server) and a short deterministic simulation
 test:
     pnpm --filter stdb-localfirst test

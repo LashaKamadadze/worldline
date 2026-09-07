@@ -11,7 +11,16 @@ import { performance } from 'node:perf_hooks';
 import { Timestamp, Uuid } from 'spacetimedb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveServer, waitFor } from '../src/fixture';
-import { attach, connect, drained, localView, mod, openLocal, serverView, uuid } from '../src/client';
+import {
+  attach,
+  connect,
+  drained,
+  localView,
+  mod,
+  openLocal,
+  serverView,
+  uuid,
+} from '../src/client';
 
 let server: LiveServer;
 const N = 10_000;
@@ -49,17 +58,27 @@ describe(`working set of ${N} rows`, () => {
       await Promise.all(calls);
     }
     const ms = performance.now() - t0;
-    console.log(`seeded ${N} rows via reducer calls in ${ms.toFixed(0)}ms (${((N * 1000) / ms).toFixed(0)}/s)`);
+    console.log(
+      `seeded ${N} rows via reducer calls in ${ms.toFixed(0)}ms (${((N * 1000) / ms).toFixed(0)}/s)`
+    );
     expect(await server.sqlCount('todos')).toBe(N);
     seed.conn.disconnect();
   });
 
-  it('a fresh client loads the working set, snapshots it, boots from the snapshot, and rebases 200 intents', async () => {
+  const title = 'fresh client loads, snapshots, boots from snapshot, rebases 200 intents';
+  it(title, async () => {
     const c = await openLocal({ snapshotDebounceMs: null });
     const t0 = performance.now();
-    const conn = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => c.lf.disconnect() });
+    const conn = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => c.lf.disconnect(),
+    });
     attach(c.lf, conn.conn);
-    await waitFor(() => c.lf.db.todos.count() === BigInt(N), { timeoutMs: 120_000, what: 'initial state' });
+    await waitFor(() => c.lf.db.todos.count() === BigInt(N), {
+      timeoutMs: 120_000,
+      what: 'initial state',
+    });
     const loadMs = performance.now() - t0;
     console.log(`initial load of ${N} rows: ${loadMs.toFixed(0)}ms`);
     expect(loadMs).toBeLessThan(60_000);
@@ -91,7 +110,10 @@ describe(`working set of ${N} rows`, () => {
     const t4 = performance.now();
     again.lf.rebase();
     const rebaseMs = performance.now() - t4;
-    console.log(`${PENDING} predicted calls: ${callMs.toFixed(0)}ms; rebase of ${PENDING} pending over ${N} rows: ${rebaseMs.toFixed(0)}ms`);
+    console.log(
+      `${PENDING} predicted calls: ${callMs.toFixed(0)}ms; ` +
+        `rebase of ${PENDING} pending over ${N} rows: ${rebaseMs.toFixed(0)}ms`
+    );
     expect(rebaseMs).toBeLessThan(5_000);
     expect(again.lf.pending().length).toBe(PENDING);
 
@@ -107,13 +129,19 @@ describe(`working set of ${N} rows`, () => {
     };
 
     const t5 = performance.now();
-    const conn2 = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', token: conn.token, onDisconnect: () => again.lf.disconnect() });
+    const conn2 = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      token: conn.token,
+      onDisconnect: () => again.lf.disconnect(),
+    });
     attach(again.lf, conn2.conn);
     await drained(again.lf, 120_000);
     const drainMs = performance.now() - t5;
     console.log(
       `reconnect + drain ${PENDING} intents (window 1): ${drainMs.toFixed(0)}ms; ` +
-        `${rebases} rebases totalling ${rebaseTotalMs.toFixed(0)}ms (${(rebaseTotalMs / Math.max(1, rebases)).toFixed(1)}ms avg)`
+        `${rebases} rebases totalling ${rebaseTotalMs.toFixed(0)}ms ` +
+        `(${(rebaseTotalMs / Math.max(1, rebases)).toFixed(1)}ms avg)`
     );
     await new Promise(r => setTimeout(r, 300));
     expect(localView(again.lf)).toEqual(serverView(conn2.conn));
@@ -124,9 +152,16 @@ describe(`working set of ${N} rows`, () => {
 
   it('drain throughput with a wider in-flight window (same 10k working set)', async () => {
     const c = await openLocal({ snapshotDebounceMs: null, inflightWindow: 16 });
-    const conn = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => c.lf.disconnect() });
+    const conn = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => c.lf.disconnect(),
+    });
     attach(c.lf, conn.conn);
-    await waitFor(() => c.lf.db.todos.count() === BigInt(N), { timeoutMs: 120_000, what: 'initial state' });
+    await waitFor(() => c.lf.db.todos.count() === BigInt(N), {
+      timeoutMs: 120_000,
+      what: 'initial state',
+    });
     conn.conn.disconnect();
     await conn.closed;
 
@@ -146,7 +181,12 @@ describe(`working set of ${N} rows`, () => {
       rebases++;
     };
     const t0 = performance.now();
-    const conn2 = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', token: conn.token, onDisconnect: () => c.lf.disconnect() });
+    const conn2 = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      token: conn.token,
+      onDisconnect: () => c.lf.disconnect(),
+    });
     attach(c.lf, conn2.conn);
     await drained(c.lf, 120_000);
     const drainMs = performance.now() - t0;

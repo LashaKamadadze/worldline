@@ -42,7 +42,13 @@ export const createTodo = offlineReducer(
     // checking the key first gives a clearer message than a host unique violation.
     if (title.trim().length === 0) throw new SenderError('title must not be empty');
     if (ctx.db.todos.id.find(id) !== null) throw new SenderError('todo already exists');
-    ctx.db.todos.insert({ id, owner: ctx.sender, title, done: false, createdAt: ctx.clientTimestamp });
+    ctx.db.todos.insert({
+      id,
+      owner: ctx.sender,
+      title,
+      done: false,
+      createdAt: ctx.clientTimestamp,
+    });
   }
 );
 

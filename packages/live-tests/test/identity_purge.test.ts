@@ -31,7 +31,11 @@ describe('purge schedule and applied_intents', () => {
 
   it('acked intents leave one applied_intents row each, stamped with the sender', async () => {
     const c = await openLocal();
-    const conn = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => c.lf.disconnect() });
+    const conn = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => c.lf.disconnect(),
+    });
     attach(c.lf, conn.conn);
     const handles = [1, 2, 3].map(i => c.lf.call(mod.bump, { name: 'p', by: BigInt(i) }));
     for (const h of handles) expect(await h.settled).toBe('acked');
@@ -44,7 +48,9 @@ describe('purge schedule and applied_intents', () => {
       // SATS JSON: uuid is its u128 as a number/string, identity is hex.
       expect(ids.has(uuidJsonToBigint(row[0]).toString())).toBe(true);
       const identityJson = Array.isArray(row[1]) ? row[1][0] : row[1];
-      expect(String(identityJson).replace(/^0x/, '').toLowerCase()).toBe(conn.identity.toHexString());
+      expect(String(identityJson).replace(/^0x/, '').toLowerCase()).toBe(
+        conn.identity.toHexString()
+      );
     }
     conn.conn.disconnect();
     await c.cleanup();
@@ -67,10 +73,14 @@ function uuidJsonToBigint(v: unknown): bigint {
 }
 
 describe('identity', () => {
-  it('lf.identity follows the connection, and ctx.sender on the host is that identity', async () => {
+  it('lf.identity follows the connection; ctx.sender on the host is that identity', async () => {
     const c = await openLocal();
     const offline = c.lf.identity.toHexString();
-    const conn = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => c.lf.disconnect() });
+    const conn = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => c.lf.disconnect(),
+    });
     attach(c.lf, conn.conn);
     expect(c.lf.identity.toHexString()).toBe(conn.identity.toHexString());
     expect(c.lf.identity.toHexString()).not.toBe(offline);
@@ -78,7 +88,7 @@ describe('identity', () => {
     const id = uuid();
     const h = c.lf.call(mod.createTodo, { id, title: 'mine' });
     // Predicted owner is already the real identity.
-    expect((c.lf.db.todos.id.find(id) as any).owner.toHexString()).toBe(conn.identity.toHexString());
+    expect(c.lf.db.todos.id.find(id).owner.toHexString()).toBe(conn.identity.toHexString());
     expect(await h.settled).toBe('acked');
     await drained(c.lf);
     await sleep(100);

@@ -48,9 +48,15 @@ export async function waitFor(
 }
 
 function run(args: string[], opts: { cwd?: string } = {}): string {
-  const res = spawnSync('spacetime', args, { cwd: opts.cwd, encoding: 'utf8', maxBuffer: 64 << 20 });
+  const res = spawnSync('spacetime', args, {
+    cwd: opts.cwd,
+    encoding: 'utf8',
+    maxBuffer: 64 << 20,
+  });
   if (res.status !== 0) {
-    throw new Error(`spacetime ${args.join(' ')} failed (${res.status}):\n${res.stdout}\n${res.stderr}`);
+    throw new Error(
+      `spacetime ${args.join(' ')} failed (${res.status}):\n${res.stdout}\n${res.stderr}`
+    );
   }
   return res.stdout;
 }
@@ -84,10 +90,16 @@ export class LiveServer {
     return `ws://127.0.0.1:${this.port}`;
   }
 
-  static async start(opts: { port?: number; dataDir?: string; rootDir?: string } = {}): Promise<LiveServer> {
+  static async start(
+    opts: { port?: number; dataDir?: string; rootDir?: string } = {}
+  ): Promise<LiveServer> {
     const port = opts.port ?? (await findFreePort());
     const base = await mkdtemp(join(tmpdir(), 'stdb-live-'));
-    const server = new LiveServer(port, opts.dataDir ?? join(base, 'data'), opts.rootDir ?? join(base, 'root'));
+    const server = new LiveServer(
+      port,
+      opts.dataDir ?? join(base, 'data'),
+      opts.rootDir ?? join(base, 'root')
+    );
     await server.#spawn();
     return server;
   }
@@ -95,7 +107,14 @@ export class LiveServer {
   async #spawn(): Promise<void> {
     const proc = spawn(
       'spacetime',
-      ['start', '--data-dir', this.dataDir, '--listen-addr', `127.0.0.1:${this.port}`, '--non-interactive'],
+      [
+        'start',
+        '--data-dir',
+        this.dataDir,
+        '--listen-addr',
+        `127.0.0.1:${this.port}`,
+        '--non-interactive',
+      ],
       { stdio: ['ignore', 'pipe', 'pipe'] }
     );
     proc.stdout?.on('data', d => this.logs.push(String(d)));
@@ -139,7 +158,17 @@ export class LiveServer {
 
   #cli(args: string[]): string {
     if (!this.#serverAdded) {
-      run(['--root-dir', this.rootDir, 'server', 'add', '--url', this.httpUrl, '--no-fingerprint', '-d', 'live']);
+      run([
+        '--root-dir',
+        this.rootDir,
+        'server',
+        'add',
+        '--url',
+        this.httpUrl,
+        '--no-fingerprint',
+        '-d',
+        'live',
+      ]);
       this.#serverAdded = true;
     }
     return run(['--root-dir', this.rootDir, ...args]);

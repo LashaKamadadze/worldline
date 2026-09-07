@@ -4,7 +4,16 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveServer } from '../src/fixture';
-import { attach, connect, drained, localView, mod, openLocal, serverView, uuid } from '../src/client';
+import {
+  attach,
+  connect,
+  drained,
+  localView,
+  mod,
+  openLocal,
+  serverView,
+  uuid,
+} from '../src/client';
 
 let server: LiveServer;
 
@@ -25,7 +34,11 @@ describe('smoke', () => {
     await h.durable;
     expect(c.lf.pending().length).toBe(1);
 
-    const { conn } = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', onDisconnect: () => c.lf.disconnect() });
+    const { conn } = await connect({
+      wsUrl: server.wsUrl,
+      db: 'todo-lf',
+      onDisconnect: () => c.lf.disconnect(),
+    });
     attach(c.lf, conn);
     expect(await h.settled).toBe('acked');
     await drained(c.lf);

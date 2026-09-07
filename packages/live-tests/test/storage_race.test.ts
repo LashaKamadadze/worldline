@@ -1,15 +1,13 @@
 /**
- * Pins two storage races observed while running the live scenarios (the
- * "snapshot failed ... ENOENT rename snapshot.a.tmp" warnings). Both live in
- * core code this package does not edit; the tests are marked `it.fails` so
- * they document the defect now and flip to a real failure once fixed.
+ * Regression tests for two storage races first seen while running the live
+ * scenarios ("snapshot failed ... ENOENT rename snapshot.a.tmp" warnings):
  *
- *  1. `NodeFsStorage.write` uses one temp name per target (`<target>.tmp`), so
- *     two concurrent writes of the same file race on the same temp path and
- *     the second `rename` fails with ENOENT (or renames the other's bytes).
- *  2. `LocalFirst.close()` clears the snapshot timer but does not await a
- *     snapshot already in flight, so removing the directory right after
- *     `close()` (a normal app teardown) makes that write fail.
+ *  1. `NodeFsStorage.write` used one temp name per target, so two concurrent
+ *     writes of the same file raced on the same temp path. Now every write
+ *     gets its own temp name.
+ *  2. `LocalFirst.close()` did not await a snapshot already in flight, so
+ *     removing the directory right after `close()` made that write fail.
+ *     Now `close()` waits for it.
  */
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { NodeFsStorage } from 'stdb-localfirst/client';
 
 describe('NodeFsStorage', () => {
-  it.fails('concurrent writes of the same file both succeed and leave a whole file', async () => {
+  it('concurrent writes of the same file both succeed and leave a whole file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'stdb-race-'));
     const storage = new NodeFsStorage(dir);
     const a = new Uint8Array(64 * 1024).fill(1);

@@ -14,7 +14,18 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveServer, waitFor } from '../src/fixture';
-import { attach, connect, DbConnection, drained, localView, mod, openLocal, serverView, sleep, uuid } from '../src/client';
+import {
+  attach,
+  connect,
+  DbConnection,
+  drained,
+  localView,
+  mod,
+  openLocal,
+  serverView,
+  sleep,
+  uuid,
+} from '../src/client';
 
 let server: LiveServer;
 
@@ -28,7 +39,7 @@ afterAll(async () => {
 });
 
 describe('server restart', () => {
-  it('raw DbConnection: onDisconnect fires once, no automatic reconnect, onConnect count stays 1', async () => {
+  it('raw DbConnection: onDisconnect once, no auto reconnect, onConnect stays 1', async () => {
     let connects = 0;
     let disconnects = 0;
     const c = await openLocal();
@@ -58,7 +69,8 @@ describe('server restart', () => {
     await c.cleanup();
   });
 
-  it('application-driven reconnect with the saved token: intents made during the outage are delivered and views converge', async () => {
+  const title = 'app-driven reconnect with saved token delivers outage intents and converges';
+  it(title, async () => {
     const c = await openLocal();
     let token: string | undefined;
     let current: DbConnection | null = null;
@@ -113,11 +125,11 @@ describe('server restart', () => {
     expect(c.lf.identity.toHexString()).toBe(identity); // same principal after reconnect
     expect(reconnects).toBeGreaterThanOrEqual(2);
     expect(localView(c.lf)).toEqual(serverView(current!));
-    expect((c.lf.db.todos.id.find(before) as any).done).toBe(true);
+    expect(c.lf.db.todos.id.find(before).done).toBe(true);
     expect(await server.sqlCount('lf.applied_intents')).toBe(3);
 
     // Stop the reconnect loop before cleanup.
-    const last = current! as DbConnection;
+    const last = current!;
     (last as any).__stop = true;
     await c.cleanup(); // lf.disconnect() inside close() disposes the link; the conn stays up
     last.disconnect();

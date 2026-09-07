@@ -9,7 +9,12 @@
  */
 import { BinaryWriter, ProductType, Timestamp, Uuid } from 'spacetimedb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { LocalStore, SeededRng, executeReducer, tableSpecsFromSchema } from 'stdb-localfirst/client';
+import {
+  LocalStore,
+  SeededRng,
+  executeReducer,
+  tableSpecsFromSchema,
+} from 'stdb-localfirst/client';
 import * as localfirst from 'stdb-localfirst/server';
 import { LiveServer } from '../src/fixture';
 import { canon, connect, mod, reducers, uuid } from '../src/client';
@@ -40,7 +45,10 @@ describe('fake ctx.db vs real host', () => {
         .subscribe(['SELECT * FROM todos', 'SELECT * FROM counters']);
     });
 
-    const specs = [...tableSpecsFromSchema((mod as any).default), ...tableSpecsFromSchema((localfirst as any).default, 'lf')];
+    const specs = [
+      ...tableSpecsFromSchema((mod as any).default),
+      ...tableSpecsFromSchema((localfirst as any).default, 'lf'),
+    ];
     const local = new LocalStore(specs, { authoritative: true });
     const bindings = reducers as any;
     const serializers: Record<string, (w: BinaryWriter, v: any) => void> = {};
@@ -83,7 +91,8 @@ describe('fake ctx.db vs real host', () => {
       let localOk = localExec.status === 'predicted';
       let localError = '';
       if (localExec.status === 'predicted') local.commitToBase(localExec.writes);
-      else if (localExec.status === 'failed') localError = String((localExec.error as any)?.message ?? localExec.error);
+      else if (localExec.status === 'failed')
+        localError = String((localExec.error as any)?.message ?? localExec.error);
       else {
         localOk = false;
         localError = `unpredicted: ${localExec.reason}`;
@@ -103,26 +112,40 @@ describe('fake ctx.db vs real host', () => {
       }
 
       if (localOk !== remoteOk) {
-        divergences.push(`op ${i} ${accessor} ${JSON.stringify(args, bigintReplacer)}: local ok=${localOk} (${localError}) remote ok=${remoteOk} (${remoteError})`);
+        divergences.push(
+          `op ${i} ${accessor} ${JSON.stringify(args, bigintReplacer)}: ` +
+            `local ok=${localOk} (${localError}) remote ok=${remoteOk} (${remoteError})`
+        );
         continue;
       }
       if (!localOk && !remoteError.includes(localError.replace(/^.*?: /, '').slice(0, 20))) {
         // Messages are compared loosely: the host wraps the thrown message.
-        divergences.push(`op ${i} ${accessor}: error text differs: local='${localError}' remote='${remoteError}'`);
+        divergences.push(
+          `op ${i} ${accessor}: error text differs: local='${localError}' remote='${remoteError}'`
+        );
       }
       const remoteTodos = canon(conn.db.todos.iter());
       const localTodos = canon(local.baseRows('todos'));
       const remoteCounters = canon(conn.db.counters.iter());
       const localCounters = canon(local.baseRows('counters'));
       if (JSON.stringify(remoteTodos) !== JSON.stringify(localTodos)) {
-        divergences.push(`op ${i} ${accessor}: todos differ (${localTodos.length} local vs ${remoteTodos.length} remote)`);
+        divergences.push(
+          `op ${i} ${accessor}: todos differ ` +
+            `(${localTodos.length} local vs ${remoteTodos.length} remote)`
+        );
       }
       if (JSON.stringify(remoteCounters) !== JSON.stringify(localCounters)) {
-        divergences.push(`op ${i} ${accessor}: counters differ: local=${localCounters.join('|')} remote=${remoteCounters.join('|')}`);
+        divergences.push(
+          `op ${i} ${accessor}: counters differ: ` +
+            `local=${localCounters.join('|')} remote=${remoteCounters.join('|')}`
+        );
       }
       if (divergences.length > 10) break;
     }
-    console.log(`differential: ${OPS} ops, ${failures} rejected by the host, ${divergences.length} divergences`);
+    console.log(
+      `differential: ${OPS} ops, ${failures} rejected by the host, ` +
+        `${divergences.length} divergences`
+    );
     for (const d of divergences) console.log('  ' + d);
     expect(divergences).toEqual([]);
     expect(failures).toBeGreaterThan(0);

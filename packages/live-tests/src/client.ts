@@ -20,7 +20,9 @@ import { DbConnection, reducers } from '../generated/index';
 
 export { mod, DbConnection, reducers };
 
-export const WORKING_SET: WorkingSet = { queries: ['SELECT * FROM todos', 'SELECT * FROM counters'] };
+export const WORKING_SET: WorkingSet = {
+  queries: ['SELECT * FROM todos', 'SELECT * FROM counters'],
+};
 export const ACCESSORS = ['todos', 'counters'];
 
 export const uuid = (): Uuid => Uuid.fromRandomBytesV4(crypto.getRandomValues(new Uint8Array(16)));
@@ -75,7 +77,7 @@ export async function openLocal(
   const dir = opts.dir ?? (await mkdtemp(join(tmpdir(), 'stdb-lf-client-')));
   const lf = await LocalFirst.open({
     module: mod as any,
-    reducers: reducers as any,
+    reducers: reducers,
     storage: new NodeFsStorage(dir),
     workingSet: WORKING_SET,
     snapshotDebounceMs: 100,
@@ -105,7 +107,10 @@ export async function drained(lf: LocalFirst, timeoutMs = 30_000): Promise<void>
   const start = Date.now();
   while (lf.pending().length > 0 || lf.store.hasOverlay()) {
     if (Date.now() - start > timeoutMs) {
-      throw new Error(`not drained after ${timeoutMs}ms: pending=${lf.pending().length} overlay=${lf.store.hasOverlay()}`);
+      throw new Error(
+        `not drained after ${timeoutMs}ms: ` +
+          `pending=${lf.pending().length} overlay=${lf.store.hasOverlay()}`
+      );
     }
     await new Promise(r => setTimeout(r, 20));
   }
@@ -121,7 +126,8 @@ export function canon(rows: Iterable<any>): string[] {
         if (typeof v === 'bigint') return v.toString() + 'n';
         if (v instanceof Uuid) return v.toString();
         if (v instanceof Identity) return v.toHexString();
-        if (v && typeof v === 'object' && 'microsSinceUnixEpoch' in v) return String(v.microsSinceUnixEpoch);
+        if (v && typeof v === 'object' && 'microsSinceUnixEpoch' in v)
+          return String(v.microsSinceUnixEpoch);
         return v;
       })
     )
