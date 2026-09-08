@@ -19,6 +19,7 @@ import { sortedRows } from './serialize';
  */
 const workingSet: WorkingSet = { queries: ['SELECT * FROM todos', 'SELECT * FROM counters'] };
 const accessors = ['todos', 'counters'];
+const TOKEN_KEY = 'stdb-localfirst-test-token';
 
 let lf: LocalFirst | null = null;
 let conn: DbConnection | null = null;
@@ -119,10 +120,14 @@ function storageFor(dir: string): StorageAdapter {
   connect(wsUrl: string, db: string): Promise<string> {
     if (!lf) throw new Error('not open');
     return new Promise((resolve, reject) => {
+      // A real app keeps its token so the identity survives reloads and new tabs.
+      const savedToken = localStorage.getItem(TOKEN_KEY) ?? undefined;
       conn = DbConnection.builder()
         .withUri(wsUrl)
         .withDatabaseName(db)
-        .onConnect(c => {
+        .withToken(savedToken)
+        .onConnect((c, _identity, token) => {
+          localStorage.setItem(TOKEN_KEY, token);
           lf!.connect(createSdkLink(c, { workingSet, accessors }));
           resolve(c.identity?.toHexString() ?? '');
         })

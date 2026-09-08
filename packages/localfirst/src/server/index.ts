@@ -8,6 +8,7 @@ import {
   LF_WRAPPED,
   SESSION_CLIENT_PARAM,
   SESSION_EPOCH_PARAM,
+  SESSION_OWNER_MISMATCH,
 } from '../shared/symbols';
 
 /**
@@ -100,7 +101,7 @@ export function beginSessionBody(ns: any, ctx: any, args: SessionArgs): void {
   const row = ns.sessions.clientId.find(clientId);
   if (row !== null) {
     if (!(row.owner as Identity).isEqual(ctx.sender)) {
-      throw new SenderError('client id belongs to another identity');
+      throw new SenderError(SESSION_OWNER_MISMATCH);
     }
     if (epoch <= row.epoch) throw new SenderError('stale session epoch');
     ns.sessions.clientId.update({ clientId, owner: ctx.sender, epoch, lastSeen: ctx.timestamp });

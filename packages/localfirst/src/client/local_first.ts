@@ -18,6 +18,7 @@ import {
   LF_WRAPPED,
   SESSION_CLIENT_PARAM,
   SESSION_EPOCH_PARAM,
+  SESSION_OWNER_MISMATCH,
 } from '../shared/symbols';
 import { deepEqual, matchRange } from './compare';
 import { dependentsOf } from './deps';
@@ -474,9 +475,9 @@ export class LocalFirst {
    * this link sends carries a session the server already knows; a copy left
    * behind by an earlier link carries an older epoch and is rejected.
    */
-  #beginSession(link: Link, generation: number): void {
+  #beginSession(link: Link, generation: number, rotate = false): void {
     this.log
-      .beginSession(() => uuidV4(this.#rng))
+      .beginSession(() => uuidV4(this.#rng), rotate)
       .then(session => {
         if (generation !== this.#linkGeneration) return;
         return link.transport.callReducer(this.#sessionReducer, encodeSessionArgs(session));
@@ -488,7 +489,17 @@ export class LocalFirst {
           this.#drainReady = true;
           this.#drain();
         },
-        error => console.warn('stdb-localfirst: session handshake failed; not sending', error)
+        (error: unknown) => {
+          if (generation !== this.#linkGeneration) return;
+          // The stored client id was registered by a different identity (the app
+          // connected without its saved token). Start over with a fresh id, once.
+          if (!rotate && isIdentityMismatch(error)) {
+            console.warn('stdb-localfirst: identity changed; rotating the client id');
+            this.#beginSession(link, generation, true);
+            return;
+          }
+          console.warn('stdb-localfirst: session handshake failed; not sending', error);
+        }
       );
   }
 
@@ -732,6 +743,11 @@ export class LocalFirst {
 }
 
 // ------------------------------------------------------------------ helpers
+
+function isIdentityMismatch(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(SESSION_OWNER_MISMATCH);
+}
 
 function workingSetText(workingSet: WorkingSet): string {
   if (typeof workingSet.queries === 'function') return workingSet.queries.toString();

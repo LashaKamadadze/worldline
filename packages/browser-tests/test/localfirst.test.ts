@@ -140,7 +140,7 @@ describe('LocalFirst in the browser', () => {
         }
         expect(
           await t((t, a) => t.callExpectThrow('createTodo', { id: a, title: 'dup' }), a)
-        ).toContain('UniqueAlreadyExists');
+        ).toContain('already exists');
         const before = await t(t => t.rows('todos'));
         expect(before).toHaveLength(2);
         expect(await t(t => t.pending())).toHaveLength(4);

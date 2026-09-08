@@ -13,6 +13,9 @@ export const LF_PARAMS: unique symbol = Symbol.for('stdb-localfirst.params') as 
 export const INTENT_ID_PARAM = 'intentId';
 export const CLIENT_TS_PARAM = 'clientTs';
 
+/** Rejection text of `begin_session` when the stored client id is owned by another identity. */
+export const SESSION_OWNER_MISMATCH = 'client id belongs to another identity';
+
 /**
  * Session fence parameters, appended after the two above. An intent is only
  * applied when the pair names the sender's current session; a copy that was

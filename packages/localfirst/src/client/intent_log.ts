@@ -324,9 +324,13 @@ export class IntentLog {
    * frame is durable; until then, and if it rejects, `session` is unchanged
    * and nothing may be sent under the new epoch.
    */
-  beginSession(newClientId: () => Uuid): Promise<Session> {
+  /**
+   * Persist the next session. With `rotate`, a fresh client id starts at epoch 1;
+   * used when the server reports the stored id belongs to another identity.
+   */
+  beginSession(newClientId: () => Uuid, rotate = false): Promise<Session> {
     return this.#enqueue(async () => {
-      const previous = this.#session;
+      const previous = rotate ? null : this.#session;
       const next: Session = {
         clientId: previous === null ? newClientId() : previous.clientId,
         epoch: previous === null ? 1n : previous.epoch + 1n,

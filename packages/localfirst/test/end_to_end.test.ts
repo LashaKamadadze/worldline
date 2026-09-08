@@ -234,6 +234,33 @@ describe('end to end against the fake server', () => {
     await again.close();
   });
 
+  it('rotates the client id when the identity changed and keeps draining', async () => {
+    const w = world(44);
+    const lf = await w.open();
+    const first = lf.call(mod.bump, { name: 'r', by: 1n });
+    const link = w.link();
+    link.connect();
+    lf.connect(link);
+    await w.sched.runUntilIdle();
+    expect(await first.settled).toBe('acked');
+    const before = lf.log.session!;
+    lf.disconnect();
+    link.disconnect();
+    // Same storage, different identity: the app connected without its saved token.
+    const other = new Identity(43n);
+    const second = lf.call(mod.bump, { name: 'r', by: 1n });
+    const foreign = new FakeLink(w.server, w.sched, new SeededRng(9), LAN, other);
+    foreign.connect();
+    lf.connect(foreign);
+    await w.sched.runUntilIdle();
+    expect(await second.settled).toBe('acked');
+    const after = lf.log.session!;
+    expect(after.clientId.toString()).not.toBe(before.clientId.toString());
+    expect(after.epoch).toBe(1n);
+    expect(w.server.sessionEpoch(before.clientId)).toBe(before.epoch);
+    await lf.close();
+  });
+
   it('rejects locally what the server would reject', async () => {
     const w = world(17);
     const lf = await w.open();
