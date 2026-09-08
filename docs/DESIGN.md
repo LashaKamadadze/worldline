@@ -132,6 +132,13 @@ storage operations (any append, write or read may fail or tear), the clock
 Not defended: a second writer bypassing the lock, malicious edits to the log
 (CRC catches corruption, not forgery), an attacker with the auth token.
 
+Identity change: if a storage directory is reused under a new identity (the
+app lost its token), `begin_session` rejects the stored client id and the
+client rotates to a fresh id. Pending intents are then sent as the new
+identity, and a zombie copy from the old identity's connection is fenced only
+by the old session row. Apps should persist the token; one directory per
+identity is the supported layout.
+
 ## Testing strategy
 
 - Unit tests per component (framing, log, store, executor, dependencies,
