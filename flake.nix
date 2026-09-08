@@ -3,21 +3,22 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # The supported system list as an input, so a consumer can narrow or extend it
+    # with `--override-input systems` instead of editing this file.
+    systems.url = "github:nix-systems/default";
   };
 
   outputs =
-    { self, nixpkgs, ... }:
+    {
+      self,
+      nixpkgs,
+      systems,
+      ...
+    }:
     let
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-
       forAllSystems =
         f:
-        nixpkgs.lib.genAttrs systems (
+        nixpkgs.lib.genAttrs (import systems) (
           system:
           f (
             import nixpkgs {
@@ -37,34 +38,35 @@
         in
         {
           default = pkgs.mkShell {
-            packages =
-              [ spacetimedb ]
-              ++ (with pkgs; [
-                # JavaScript toolchain: library, test module, demo app, vitest.
-                nodejs
-                pnpm
-                bun
+            packages = [
+              spacetimedb
+            ]
+            ++ (with pkgs; [
+              # JavaScript toolchain: library, test module, demo app, vitest.
+              nodejs
+              pnpm
+              bun
 
-                # Task runner
-                just
+              # Task runner
+              just
 
-                # wasm-opt: `spacetime build` optimizes modules with it.
-                binaryen
+              # wasm-opt: `spacetime build` optimizes modules with it.
+              binaryen
 
-                # Linters & formatters
-                actionlint
-                nixfmt
-                statix
-                deadnix
-                typos
+              # Linters & formatters
+              actionlint
+              nixfmt
+              statix
+              deadnix
+              typos
 
-                # General tooling
-                git
-                jq
+              # General tooling
+              git
+              jq
 
-                # Headless browsers for packages/browser-tests (Playwright 1.61.x build).
-                playwright-driver.browsers
-              ]);
+              # Headless browsers for packages/browser-tests (Playwright 1.61.x build).
+              playwright-driver.browsers
+            ]);
 
             # Playwright must use the nix-provided browsers (no downloads, matching driver version).
             PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
@@ -74,11 +76,6 @@
             shellHook = ''
               export PNPM_HOME="$PWD/.pnpm-home"
               export PATH="$PNPM_HOME:$PATH"
-              echo ""
-              echo -e "  \033[1;36m@kamadadze/worldline\033[0m"
-              echo "  node      $(node --version)   pnpm $(pnpm --version)   bun $(bun --version)"
-              echo "  spacetime $(spacetime --version 2>/dev/null | head -n1)"
-              echo ""
             '';
           };
         }
