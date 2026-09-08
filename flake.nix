@@ -15,18 +15,19 @@
       ...
     }:
     let
-      forAllSystems =
-        f:
-        nixpkgs.lib.genAttrs (import systems) (
-          system:
-          f (
-            import nixpkgs {
-              inherit system;
-              # SpacetimeDB is BSL 1.1, which nixpkgs classifies as unfree.
-              config.allowlistedLicenses = [ nixpkgs.lib.licenses.bsl11 ];
-            }
-          )
-        );
+      inherit (nixpkgs) lib;
+
+      # SpacetimeDB is BSL 1.1, which nixpkgs classifies as unfree, so every
+      # package set this flake hands out allows exactly that license.
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          config.allowlistedLicenses = [ lib.licenses.bsl11 ];
+        };
+
+      # `forAllSystems (pkgs: ...)` builds `{ x86_64-linux = ...; aarch64-linux = ...; ... }`.
+      forAllSystems = f: lib.genAttrs (import systems) (system: f (pkgsFor system));
     in
     {
       devShells = forAllSystems (
