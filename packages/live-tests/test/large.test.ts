@@ -1,7 +1,7 @@
 /**
  * Scenario (d): a large working set on the real host.
  *
- * 10,000 todos are created through the SDK, then a fresh LocalFirst client
+ * 10,000 todos are created through the SDK, then a fresh Worldline client
  * subscribes. Measured: initial load into the base layer, boot from snapshot,
  * and a rebase with 200 pending intents on top of the 10k rows. Bounds are
  * deliberately loose; the point is to catch accidental O(n^2) behaviour and to
@@ -39,7 +39,7 @@ afterAll(async () => {
 
 describe(`working set of ${N} rows`, () => {
   it('seeds the server through the SDK', async () => {
-    const seed = await connect({ wsUrl: server.wsUrl, db: 'todo-lf' });
+    const seed = await connect({ wsUrl: server.wsUrl, db: 'todo-wl' });
     const session = await beginRawSession(seed.conn);
     const t0 = performance.now();
     const batch = 500;
@@ -74,7 +74,7 @@ describe(`working set of ${N} rows`, () => {
     const t0 = performance.now();
     const conn = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => c.lf.disconnect(),
     });
     attach(c.lf, conn.conn);
@@ -134,7 +134,7 @@ describe(`working set of ${N} rows`, () => {
     const t5 = performance.now();
     const conn2 = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       token: conn.token,
       onDisconnect: () => again.lf.disconnect(),
     });
@@ -148,7 +148,7 @@ describe(`working set of ${N} rows`, () => {
     );
     await new Promise(r => setTimeout(r, 300));
     expect(localView(again.lf)).toEqual(serverView(conn2.conn));
-    expect(await server.sqlCount('lf.applied_intents')).toBe(N + PENDING);
+    expect(await server.sqlCount('wl.applied_intents')).toBe(N + PENDING);
     conn2.conn.disconnect();
     await again.cleanup();
   });
@@ -157,7 +157,7 @@ describe(`working set of ${N} rows`, () => {
     const c = await openLocal({ snapshotDebounceMs: null, inflightWindow: 16 });
     const conn = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => c.lf.disconnect(),
     });
     attach(c.lf, conn.conn);
@@ -186,7 +186,7 @@ describe(`working set of ${N} rows`, () => {
     const t0 = performance.now();
     const conn2 = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       token: conn.token,
       onDisconnect: () => c.lf.disconnect(),
     });

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Tests stdb-localfirst against a real SpacetimeDB standalone server (Node only)",
+  "description": "Tests @kamadadze/worldline against a real SpacetimeDB standalone server (Node only)",
   "scripts": {
     "generate": "scripts/generate.sh",
     "pretest": "scripts/generate.sh",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "spacetimedb": "2.10.0",
-    "stdb-localfirst": "workspace:*",
+    "@kamadadze/worldline": "workspace:*",
     "todo-module": "workspace:*"
   },
   "devDependencies": {

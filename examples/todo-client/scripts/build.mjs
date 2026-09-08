@@ -1,9 +1,9 @@
-// Bundles the demo for Node. `localfirstEsbuildPlugin` resolves the host-only
+// Bundles the demo for Node. `worldlineEsbuildPlugin` resolves the host-only
 // `spacetime:sys@x.y` import inside `spacetimedb/server` to the shim. A browser
-// app uses `localfirstVitePlugin()` from the same entry point.
+// app uses `worldlineVitePlugin()` from the same entry point.
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
-import { localfirstEsbuildPlugin } from 'stdb-localfirst/bundler';
+import { worldlineEsbuildPlugin } from '@kamadadze/worldline/bundler';
 
 await build({
   entryPoints: [fileURLToPath(new URL('../src/demo.ts', import.meta.url))],
@@ -14,5 +14,5 @@ await build({
   target: 'node22',
   sourcemap: true,
   logLevel: 'info',
-  plugins: [localfirstEsbuildPlugin()],
+  plugins: [worldlineEsbuildPlugin()],
 });

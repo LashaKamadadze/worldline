@@ -14,8 +14,8 @@ import {
   SeededRng,
   executeReducer,
   tableSpecsFromSchema,
-} from 'stdb-localfirst/client';
-import * as localfirst from 'stdb-localfirst/server';
+} from '@kamadadze/worldline/client';
+import * as worldline from '@kamadadze/worldline/server';
 import { LiveServer } from '../src/fixture';
 import { beginRawSession, canon, connect, mod, reducers, uuid } from '../src/client';
 
@@ -35,7 +35,7 @@ const OPS = Number(process.env.DIFF_OPS ?? 300);
 describe('fake ctx.db vs real host', () => {
   it(`${OPS} random operations produce identical outcomes and tables`, async () => {
     const rng = new SeededRng(20260907);
-    const c = await connect({ wsUrl: server.wsUrl, db: 'todo-lf' });
+    const c = await connect({ wsUrl: server.wsUrl, db: 'todo-wl' });
     const conn = c.conn;
     // The client must see everything to compare full tables.
     await new Promise<void>(resolve => {
@@ -47,7 +47,7 @@ describe('fake ctx.db vs real host', () => {
 
     const specs = [
       ...tableSpecsFromSchema((mod as any).default),
-      ...tableSpecsFromSchema((localfirst as any).default, 'lf'),
+      ...tableSpecsFromSchema((worldline as any).default, 'wl'),
     ];
     const local = new LocalStore(specs, { authoritative: true });
     // Both sides open the same session: the host through the handshake reducer,
@@ -55,8 +55,8 @@ describe('fake ctx.db vs real host', () => {
     const session = await beginRawSession(conn);
     const opened = executeReducer(
       local,
-      (ctx, args) => localfirst.beginSessionBody(ctx.db.lf, ctx, args as any),
-      { clientId: session.lfClient, epoch: session.lfEpoch },
+      (ctx, args) => worldline.beginSessionBody(ctx.db.wl, ctx, args as any),
+      { clientId: session.wlClient, epoch: session.wlEpoch },
       { sender: c.identity, timestamp: Timestamp.now(), connectionId: null, rng: new SeededRng(0) }
     );
     expect(opened.status).toBe('predicted');
@@ -65,7 +65,7 @@ describe('fake ctx.db vs real host', () => {
     const serializers: Record<string, (w: BinaryWriter, v: any) => void> = {};
     const deserializers: Record<string, any> = {};
     for (const [key, b] of Object.entries<any>(bindings)) {
-      if (b.paramsType === undefined) continue; // the `lf` group of submodule reducers
+      if (b.paramsType === undefined) continue; // the `wl` group of submodule reducers
       serializers[key] = ProductType.makeSerializer(b.paramsType);
       deserializers[key] = ProductType.makeDeserializer(b.paramsType);
     }

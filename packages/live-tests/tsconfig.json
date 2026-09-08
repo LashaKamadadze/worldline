@@ -6,8 +6,8 @@
     "declaration": false,
     "types": ["node"],
     "paths": {
-      "spacetime:sys@2.0": ["../localfirst/src/sys-shim/index.ts"],
-      "spacetime:sys@2.1": ["../localfirst/src/sys-shim/index.ts"]
+      "spacetime:sys@2.0": ["../worldline/src/sys-shim/index.ts"],
+      "spacetime:sys@2.1": ["../worldline/src/sys-shim/index.ts"]
     }
   },
   "include": ["src", "test", "generated"]

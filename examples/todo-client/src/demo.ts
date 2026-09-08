@@ -10,20 +10,20 @@
  */
 import { rm } from 'node:fs/promises';
 import { Uuid } from 'spacetimedb';
-import { LocalFirst, createSdkLink, type WorkingSet } from 'stdb-localfirst/client';
-import { NodeFsStorage } from 'stdb-localfirst/client/node';
+import { Worldline, createSdkLink, type WorkingSet } from '@kamadadze/worldline/client';
+import { NodeFsStorage } from '@kamadadze/worldline/client/node';
 import * as mod from 'todo-module';
 import { DbConnection, reducers } from './module_bindings';
 
 const URI = process.env.STDB_URI ?? 'ws://127.0.0.1:3000';
-const DB = process.env.STDB_DB ?? 'todo-lf';
-const DATA_DIR = new URL('../.lf-data/', import.meta.url).pathname;
+const DB = process.env.STDB_DB ?? 'todo-wl';
+const DATA_DIR = new URL('../.wl-data/', import.meta.url).pathname;
 
 const workingSet: WorkingSet = { queries: ['SELECT * FROM todos', 'SELECT * FROM counters'] };
 const accessors = ['todos', 'counters'];
 
 const open = () =>
-  LocalFirst.open({
+  Worldline.open({
     module: mod,
     reducers: reducers,
     storage: new NodeFsStorage(DATA_DIR),
@@ -31,7 +31,7 @@ const open = () =>
     snapshotDebounceMs: 200,
   });
 
-const show = (label: string, lf: LocalFirst) => {
+const show = (label: string, lf: Worldline) => {
   const todos = [...lf.db.todos.iter()].map((t: any) => `${t.done ? '[x]' : '[ ]'} ${t.title}`);
   const counters = [...lf.db.counters.iter()].map((c: any) => `${c.name}=${c.value}`);
   console.log(
@@ -66,7 +66,7 @@ async function offlineSession(): Promise<void> {
 }
 
 /** Resolves when every currently pending intent has been acked, failed or cancelled. */
-function allSettled(lf: LocalFirst): Promise<void[]> {
+function allSettled(lf: Worldline): Promise<void[]> {
   return Promise.all(
     lf.pending().map(
       () =>
@@ -81,7 +81,7 @@ function allSettled(lf: LocalFirst): Promise<void[]> {
   );
 }
 
-function connect(lf: LocalFirst): Promise<DbConnection> {
+function connect(lf: Worldline): Promise<DbConnection> {
   return new Promise<DbConnection>((resolve, reject) => {
     DbConnection.builder()
       .withUri(URI)
@@ -103,7 +103,7 @@ const describeCounters = (rows: Iterable<any>): string[] =>
   [...rows].map(c => `${c.name}=${c.value}`).sort();
 
 /** Phase 4: the merged local view must equal the server's view of the same subscription. */
-function compareWithServer(lf: LocalFirst, conn: DbConnection): boolean {
+function compareWithServer(lf: Worldline, conn: DbConnection): boolean {
   const server = [describeTodos(conn.db.todos.iter()), describeCounters(conn.db.counters.iter())];
   const local = [describeTodos(lf.db.todos.iter()), describeCounters(lf.db.counters.iter())];
   const same = JSON.stringify(server) === JSON.stringify(local);

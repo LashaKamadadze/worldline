@@ -1,6 +1,6 @@
 /**
  * Smoke: the fixture works end to end. Start a server, publish, connect one
- * LocalFirst client, make an offline call, sync, and compare with the server.
+ * Worldline client, make an offline call, sync, and compare with the server.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveServer } from '../src/fixture';
@@ -36,14 +36,14 @@ describe('smoke', () => {
 
     const { conn } = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => c.lf.disconnect(),
     });
     attach(c.lf, conn);
     expect(await h.settled).toBe('acked');
     await drained(c.lf);
     expect(localView(c.lf)).toEqual(serverView(conn));
-    expect(await server.sqlCount('lf.applied_intents')).toBe(1);
+    expect(await server.sqlCount('wl.applied_intents')).toBe(1);
     conn.disconnect();
     await c.cleanup();
   });

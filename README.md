@@ -1,4 +1,4 @@
-# stdb-localfirst
+# @kamadadze/worldline
 
 Offline-first layer for SpacetimeDB TypeScript modules. Reducers run on the
 client first, are written to a durable intent log, and are delivered to the
@@ -20,11 +20,11 @@ Design, invariants, limits and threat model: [docs/DESIGN.md](docs/DESIGN.md).
 
 | Path | Purpose |
 |---|---|
-| `packages/localfirst/src/server` | Submodule (`applied_intents`, `sessions`, purge schedule) and the `offlineReducer()` wrapper |
-| `packages/localfirst/src/client` | `LocalFirst` engine: local store, executor, intent log, snapshot, syncer, SDK link, stores |
-| `packages/localfirst/src/sys-shim` | Stub for the host-only `spacetime:sys@x.y` import so module code loads on the client |
-| `packages/localfirst/src/testing` | Deterministic simulation: fake server, virtual network, fault-injecting storage |
-| `packages/localfirst/test` | Unit, end-to-end (fake server) and DST tests |
+| `packages/worldline/src/server` | Submodule (`applied_intents`, `sessions`, purge schedule) and the `offlineReducer()` wrapper |
+| `packages/worldline/src/client` | `Worldline` engine: local store, executor, intent log, snapshot, syncer, SDK link, stores |
+| `packages/worldline/src/sys-shim` | Stub for the host-only `spacetime:sys@x.y` import so module code loads on the client |
+| `packages/worldline/src/testing` | Deterministic simulation: fake server, virtual network, fault-injecting storage |
+| `packages/worldline/test` | Unit, end-to-end (fake server) and DST tests |
 | `examples/todo-module` | Real SpacetimeDB module using the library |
 | `examples/todo-client` | Node demo against a real local server: offline, restart, sync, converge |
 
@@ -32,8 +32,8 @@ Design, invariants, limits and threat model: [docs/DESIGN.md](docs/DESIGN.md).
 
 ```ts
 import { schema, table, t } from 'spacetimedb/server';
-import * as localfirst from 'stdb-localfirst/server';
-import { installPurge, offlineReducer } from 'stdb-localfirst/server';
+import * as worldline from '@kamadadze/worldline/server';
+import { installPurge, offlineReducer } from '@kamadadze/worldline/server';
 
 const todos = table({ name: 'todos', public: true }, {
   id: t.uuid().primaryKey(),        // client-chosen key
@@ -42,21 +42,21 @@ const todos = table({ name: 'todos', public: true }, {
   createdAt: t.timestamp(),
 });
 
-const spacetimedb = schema({ todos, lf: localfirst });   // mount the submodule
+const spacetimedb = schema({ todos, wl: worldline });   // mount the submodule
 export default spacetimedb;
 
-export const init = spacetimedb.init(ctx => installPurge(ctx.as.lf, {}));
+export const init = spacetimedb.init(ctx => installPurge(ctx.as.wl, {}));
 
-export const createTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid(), title: t.string() },
+export const createTodo = offlineReducer(spacetimedb, 'wl', { id: t.uuid(), title: t.string() },
   (ctx, { id, title }) => {
     ctx.db.todos.insert({ id, title, done: false, createdAt: ctx.clientTimestamp });
   });
 ```
 
 `offlineReducer` appends four parameters: `intentId: uuid`, `clientTs: timestamp`,
-`lfClient: uuid` and `lfEpoch: u64`. On the server it checks `applied_intents`
+`wlClient: uuid` and `wlEpoch: u64`. On the server it checks `applied_intents`
 before running the body, so a redelivered intent is a silent no-op, and then
-requires `lfClient`/`lfEpoch` to name the caller's current session (the
+requires `wlClient`/`wlEpoch` to name the caller's current session (the
 submodule's `sessions` table), so a copy left in the network by an earlier
 connection cannot run after the client has already been told the resend
 failed. The client opens a session with `<alias>.begin_session` on every
@@ -68,12 +68,12 @@ ack was lost could run an intent twice.
 ## Client side
 
 ```ts
-import { LocalFirst, OpfsStorage, createSdkLink } from 'stdb-localfirst/client';
+import { Worldline, OpfsStorage, createSdkLink } from '@kamadadze/worldline/client';
 import * as mod from 'my-module';                 // the module source itself
 import { DbConnection, reducers } from './module_bindings';
 
 const workingSet = { queries: ['SELECT * FROM todos'] };
-const lf = await LocalFirst.open({ module: mod, reducers, storage: new OpfsStorage(), workingSet });
+const lf = await Worldline.open({ module: mod, reducers, storage: new OpfsStorage(), workingSet });
 
 lf.call(mod.createTodo, { id: uuid(), title: 'buy milk' });   // predicted immediately, logged, queued
 
@@ -89,9 +89,9 @@ in browsers:
 
 ```ts
 // vite.config.ts
-import { localfirstVitePlugin } from 'stdb-localfirst/bundler';
-export default { plugins: [localfirstVitePlugin()] };
-// esbuild: plugins: [localfirstEsbuildPlugin()]
+import { worldlineVitePlugin } from '@kamadadze/worldline/bundler';
+export default { plugins: [worldlineVitePlugin()] };
+// esbuild: plugins: [worldlineEsbuildPlugin()]
 ```
 
 Reads: `lf.db.todos.iter()`, `lf.db.todos.id.find(id)`, or reactive
@@ -117,7 +117,7 @@ Reads: `lf.db.todos.iter()`, `lf.db.todos.id.find(id)`, or reactive
 
 - Intent log: framed `[len][crc32][payload]` records, two slots with generation header and commit marker. Compaction writes the other slot and switches only on success, so a torn rewrite never loses a durable intent. A failed append marks the slot dirty and the next write moves to a fresh slot.
 - Snapshot: base layer only (server-confirmed rows), two slots, highest valid generation wins. Predicted rows are rebuilt from the log on boot, never snapshotted.
-- Storage adapters: memory, Node files via `stdb-localfirst/client/node` (append + fsync, temp + rename), OPFS (sync access handle in a worker, writable stream on the main thread).
+- Storage adapters: memory, Node files via `@kamadadze/worldline/client/node` (append + fsync, temp + rename), OPFS (sync access handle in a worker, writable stream on the main thread).
 
 ## Testing
 
@@ -133,7 +133,7 @@ just live-test       # scenarios against real, isolated SpacetimeDB servers (see
 
 Each test file spawns its own `spacetime start` on a random port with a temp
 data dir and a temp CLI root, publishes `examples/todo-module` (built once per
-run), and tears everything down. Private `lf.*` tables are read through the
+run), and tears everything down. Private `wl.*` tables are read through the
 HTTP SQL endpoint with the owner token. Scenarios:
 
 - two clients with conflicting offline edits: the host rejects the loser, its unsent dependents are cancelled, both converge;
@@ -167,5 +167,5 @@ a conflicting client, and closing the tab mid-drain. Playwright's Linux WebKit
 has no OPFS, so it runs the sync scenarios with the memory adapter and skips
 reload persistence.
 
-The page bundle is built with `localfirstEsbuildPlugin()` from
-`stdb-localfirst/bundler`, the same plugin an app uses.
+The page bundle is built with `worldlineEsbuildPlugin()` from
+`@kamadadze/worldline/bundler`, the same plugin an app uses.

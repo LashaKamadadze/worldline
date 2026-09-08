@@ -1,6 +1,6 @@
 import { SenderError, schema, table, t } from 'spacetimedb/server';
-import * as localfirst from 'stdb-localfirst/server';
-import { installPurge, offlineReducer } from 'stdb-localfirst/server';
+import * as worldline from '@kamadadze/worldline/server';
+import { installPurge, offlineReducer } from '@kamadadze/worldline/server';
 
 /**
  * Example consumer module. Note the two rules offline-capable reducers follow:
@@ -26,16 +26,16 @@ const counters = table(
   }
 );
 
-const spacetimedb = schema({ todos, counters, lf: localfirst });
+const spacetimedb = schema({ todos, counters, wl: worldline });
 export default spacetimedb;
 
 export const init = spacetimedb.init(ctx => {
-  installPurge(ctx.as.lf, {});
+  installPurge(ctx.as.wl, {});
 });
 
 export const createTodo = offlineReducer(
   spacetimedb,
-  'lf',
+  'wl',
   { id: t.uuid(), title: t.string() },
   (ctx, { id, title }) => {
     // offlineReducer forwards any thrown message to the caller as a SenderError;
@@ -52,19 +52,19 @@ export const createTodo = offlineReducer(
   }
 );
 
-export const toggleTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid() }, (ctx, { id }) => {
+export const toggleTodo = offlineReducer(spacetimedb, 'wl', { id: t.uuid() }, (ctx, { id }) => {
   const row = ctx.db.todos.id.find(id);
   if (!row) throw new SenderError('no such todo');
   ctx.db.todos.id.update({ ...row, done: !row.done });
 });
 
-export const deleteTodo = offlineReducer(spacetimedb, 'lf', { id: t.uuid() }, (ctx, { id }) => {
+export const deleteTodo = offlineReducer(spacetimedb, 'wl', { id: t.uuid() }, (ctx, { id }) => {
   if (!ctx.db.todos.id.delete(id)) throw new SenderError('no such todo');
 });
 
 export const bump = offlineReducer(
   spacetimedb,
-  'lf',
+  'wl',
   { name: t.string(), by: t.i64() },
   (ctx, { name, by }) => {
     const c = ctx.db.counters.name.find(name);

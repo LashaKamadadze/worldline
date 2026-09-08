@@ -1,14 +1,14 @@
 import { build } from 'esbuild';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { localfirstEsbuildPlugin } from 'stdb-localfirst/bundler';
+import { worldlineEsbuildPlugin } from '@kamadadze/worldline/bundler';
 
 const PKG = resolve(import.meta.dirname, '..');
 export const DIST = resolve(PKG, 'dist');
 
 const html = (script: string) =>
   '<!doctype html><html><head><meta charset="utf-8">' +
-  '<title>stdb-localfirst browser test</title></head>' +
+  '<title>@kamadadze/worldline browser test</title></head>' +
   `<body><pre id="log"></pre><script type="module" src="/${script}"></script></body></html>`;
 
 /**
@@ -31,7 +31,7 @@ export async function bundlePages(opts: { app: boolean }): Promise<string> {
     target: 'es2022',
     sourcemap: true,
     logLevel: 'error',
-    plugins: [localfirstEsbuildPlugin()],
+    plugins: [worldlineEsbuildPlugin()],
   });
   await writeFile(resolve(DIST, 'opfs.html'), html('opfs_page.js'));
   if (opts.app) await writeFile(resolve(DIST, 'index.html'), html('app.js'));

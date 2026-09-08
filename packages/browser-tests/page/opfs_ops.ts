@@ -1,4 +1,4 @@
-import { IntentLog, OpfsStorage, type IntentRecord } from 'stdb-localfirst/client';
+import { IntentLog, OpfsStorage, type IntentRecord } from '@kamadadze/worldline/client';
 import { Uuid } from 'spacetimedb';
 
 const enc = (s: string) => new TextEncoder().encode(s);

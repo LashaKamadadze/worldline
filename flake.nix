@@ -1,5 +1,5 @@
 {
-  description = "stdb-localfirst: offline-first client layer and server submodule for SpacetimeDB";
+  description = "worldline: offline-first client layer and server submodule for SpacetimeDB";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -75,7 +75,7 @@
               export PNPM_HOME="$PWD/.pnpm-home"
               export PATH="$PNPM_HOME:$PATH"
               echo ""
-              echo -e "  \033[1;36mstdb-localfirst\033[0m"
+              echo -e "  \033[1;36m@kamadadze/worldline\033[0m"
               echo "  node      $(node --version)   pnpm $(pnpm --version)   bun $(bun --version)"
               echo "  spacetime $(spacetime --version 2>/dev/null | head -n1)"
               echo ""

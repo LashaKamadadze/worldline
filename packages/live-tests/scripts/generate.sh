@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Regenerate when either the example module or the library's server half changed.
-sources=(../../examples/todo-module/src/index.ts ../localfirst/src/server/index.ts)
+sources=(../../examples/todo-module/src/index.ts ../worldline/src/server/index.ts)
 fresh=1
 for src in "${sources[@]}"; do
   if [ ! -f generated/index.ts ] || [ "$src" -nt generated/index.ts ]; then fresh=0; fi

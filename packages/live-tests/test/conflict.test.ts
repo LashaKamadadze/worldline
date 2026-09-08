@@ -48,7 +48,7 @@ describe('conflicting offline edits', () => {
 
     const cb = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => b.lf.disconnect(),
     });
     attach(b.lf, cb.conn);
@@ -57,7 +57,7 @@ describe('conflicting offline edits', () => {
 
     const ca = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => a.lf.disconnect(),
     });
     attach(a.lf, ca.conn);
@@ -78,7 +78,7 @@ describe('conflicting offline edits', () => {
     expect(localView(b.lf)).toEqual(serverView(cb.conn));
     expect([...a.lf.db.todos.iter()].map((t: any) => t.title)).toEqual(['B was first']);
     expect(a.lf.db.counters.name.find('independent').value).toBe(5n);
-    expect(await server.sqlCount('lf.applied_intents')).toBe(2);
+    expect(await server.sqlCount('wl.applied_intents')).toBe(2);
 
     ca.conn.disconnect();
     cb.conn.disconnect();
@@ -93,7 +93,7 @@ describe('conflicting offline edits', () => {
 
     const cb = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => b.lf.disconnect(),
     });
     attach(b.lf, cb.conn);
@@ -103,7 +103,7 @@ describe('conflicting offline edits', () => {
     // A comes online, caches the todo, then goes offline.
     let ca = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => a.lf.disconnect(),
     });
     attach(a.lf, ca.conn);
@@ -122,7 +122,7 @@ describe('conflicting offline edits', () => {
 
     ca = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       token: ca.token,
       onDisconnect: () => a.lf.disconnect(),
     });

@@ -1,4 +1,4 @@
-# stdb-localfirst design
+# @kamadadze/worldline design
 
 Server-authoritative local-first for SpacetimeDB. The client runs the module's
 own TypeScript reducers against a local copy of the working set, shows the
@@ -48,7 +48,7 @@ network by a dead connection could still run after a resend on a new
 connection was rejected and reported as failed. Every client therefore holds a
 session `{clientId, epoch}`: the log persists it, `connect()` bumps the epoch,
 fsyncs it and announces it with `<alias>.begin_session` before anything is
-sent, and every wrapped call carries `lfClient`/`lfEpoch`. The server keeps the
+sent, and every wrapped call carries `wlClient`/`wlEpoch`. The server keeps the
 newest epoch per client in `sessions` and rejects any intent whose epoch is
 not the current one, so once the client has moved on, nothing older can land.
 
@@ -82,7 +82,7 @@ single-writer rule).
 
 ## Limits
 
-Every bound lives in `packages/localfirst/src/shared/limits.ts` and is
+Every bound lives in `packages/worldline/src/shared/limits.ts` and is
 asserted at the point of use. Relationships between limits are asserted once
 at module load.
 

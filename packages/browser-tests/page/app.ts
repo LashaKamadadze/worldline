@@ -1,6 +1,6 @@
 import { Uuid } from 'spacetimedb';
 import {
-  LocalFirst,
+  Worldline,
   MemoryStorage,
   OpfsStorage,
   createSdkLink,
@@ -8,7 +8,7 @@ import {
   type IntentEvent,
   type StorageAdapter,
   type WorkingSet,
-} from 'stdb-localfirst/client';
+} from '@kamadadze/worldline/client';
 import * as mod from 'todo-module';
 import { DbConnection, reducers } from '../generated/module_bindings';
 import { sortedRows } from './serialize';
@@ -19,9 +19,9 @@ import { sortedRows } from './serialize';
  */
 const workingSet: WorkingSet = { queries: ['SELECT * FROM todos', 'SELECT * FROM counters'] };
 const accessors = ['todos', 'counters'];
-const TOKEN_KEY = 'stdb-localfirst-test-token';
+const TOKEN_KEY = 'worldline-test-token';
 
-let lf: LocalFirst | null = null;
+let lf: Worldline | null = null;
 let conn: DbConnection | null = null;
 const events: string[] = [];
 const settledIds = new Set<string>();
@@ -71,7 +71,7 @@ function storageFor(dir: string): StorageAdapter {
     opts: { snapshotDebounceMs?: number | null; inflightWindow?: number } = {}
   ) {
     if (lf) throw new Error('already open');
-    lf = await LocalFirst.open({
+    lf = await Worldline.open({
       module: mod as any,
       reducers,
       storage: storageFor(dir),

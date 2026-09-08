@@ -7,11 +7,14 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "demo": "node scripts/build.mjs && node dist/demo.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "generate": "spacetime generate --yes --lang typescript --out-dir src/module_bindings --module-path ../todo-module",
+    "pretypecheck": "pnpm generate",
+    "predemo": "pnpm generate"
   },
   "dependencies": {
     "spacetimedb": "2.10.0",
-    "stdb-localfirst": "workspace:*",
+    "@kamadadze/worldline": "workspace:*",
     "todo-module": "workspace:*"
   },
   "devDependencies": {

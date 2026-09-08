@@ -20,12 +20,12 @@ importers:
 
   examples/todo-client:
     dependencies:
+      '@kamadadze/worldline':
+        specifier: workspace:*
+        version: link:../../packages/worldline
       spacetimedb:
         specifier: 2.10.0
         version: 2.10.0
-      stdb-localfirst:
-        specifier: workspace:*
-        version: link:../../packages/localfirst
       todo-module:
         specifier: workspace:*
         version: link:../todo-module
@@ -42,12 +42,12 @@ importers:
 
   examples/todo-module:
     dependencies:
+      '@kamadadze/worldline':
+        specifier: workspace:*
+        version: link:../../packages/worldline
       spacetimedb:
         specifier: 2.10.0
         version: 2.10.0
-      stdb-localfirst:
-        specifier: workspace:*
-        version: link:../../packages/localfirst
     devDependencies:
       typescript:
         specifier: ^5.9.0
@@ -55,12 +55,12 @@ importers:
 
   packages/browser-tests:
     dependencies:
+      '@kamadadze/worldline':
+        specifier: workspace:*
+        version: link:../worldline
       spacetimedb:
         specifier: 2.10.0
         version: 2.10.0
-      stdb-localfirst:
-        specifier: workspace:*
-        version: link:../localfirst
       todo-module:
         specifier: workspace:*
         version: link:../../examples/todo-module
@@ -83,12 +83,12 @@ importers:
 
   packages/live-tests:
     dependencies:
+      '@kamadadze/worldline':
+        specifier: workspace:*
+        version: link:../worldline
       spacetimedb:
         specifier: 2.10.0
         version: 2.10.0
-      stdb-localfirst:
-        specifier: workspace:*
-        version: link:../localfirst
       todo-module:
         specifier: workspace:*
         version: link:../../examples/todo-module
@@ -103,7 +103,7 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@24.13.3)(supports-color@7.2.0)
 
-  packages/localfirst:
+  packages/worldline:
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

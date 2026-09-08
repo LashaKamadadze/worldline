@@ -1,0 +1,67 @@
+{
+  "name": "@kamadadze/worldline",
+  "version": "0.1.0",
+  "description": "Local-first layer for SpacetimeDB: run module reducers on the client, keep a durable intent log, rebase on server truth",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LashaKamadadze/worldline.git",
+    "directory": "packages/worldline"
+  },
+  "homepage": "https://github.com/LashaKamadadze/worldline#readme",
+  "bugs": {
+    "url": "https://github.com/LashaKamadadze/worldline/issues"
+  },
+  "keywords": [
+    "spacetimedb",
+    "local-first",
+    "offline-first",
+    "sync",
+    "intent-log"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./server": {
+      "types": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./src/client/index.ts"
+    },
+    "./client/node": {
+      "types": "./src/client/node.ts",
+      "default": "./src/client/node.ts"
+    },
+    "./sys-shim": {
+      "types": "./src/sys-shim/index.ts",
+      "default": "./src/sys-shim/index.ts"
+    },
+    "./bundler": {
+      "types": "./src/bundler/index.ts",
+      "default": "./src/bundler/index.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "default": "./src/testing/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:dst": "DST_SEEDS=500 vitest run test/dst.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "spacetimedb": "^2.10.0"
+  },
+  "devDependencies": {
+    "spacetimedb": "2.10.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "@types/node": "^24.0.0"
+  }
+}

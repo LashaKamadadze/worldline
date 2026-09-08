@@ -4,7 +4,7 @@
  * Isolation: random port, temp data dir, temp CLI root dir (`--root-dir`) so the
  * developer's own `cli.toml`, identities and tokens are never touched. The CLI
  * token minted for that root is the database owner, which lets tests read the
- * private `lf.*` tables over the HTTP SQL endpoint.
+ * private `wl.*` tables over the HTTP SQL endpoint.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 export const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 export const MODULE_PATH = join(REPO_ROOT, 'examples/todo-module');
-export const DB_NAME = 'todo-lf';
+export const DB_NAME = 'todo-wl';
 
 export function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {

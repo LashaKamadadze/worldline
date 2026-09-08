@@ -45,7 +45,7 @@ describe('server restart', () => {
     const c = await openLocal();
     const first = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onConnect: () => connects++,
       onDisconnect: () => {
         disconnects++;
@@ -82,7 +82,7 @@ describe('server restart', () => {
         try {
           const r = await connect({
             wsUrl: server.wsUrl,
-            db: 'todo-lf',
+            db: 'todo-wl',
             token,
             onDisconnect: () => {
               c.lf.disconnect();
@@ -126,7 +126,7 @@ describe('server restart', () => {
     expect(reconnects).toBeGreaterThanOrEqual(2);
     expect(localView(c.lf)).toEqual(serverView(current!));
     expect(c.lf.db.todos.id.find(before).done).toBe(true);
-    expect(await server.sqlCount('lf.applied_intents')).toBe(3);
+    expect(await server.sqlCount('wl.applied_intents')).toBe(3);
 
     // Stop the reconnect loop before cleanup.
     const last = current!;

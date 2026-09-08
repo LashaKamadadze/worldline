@@ -3,7 +3,7 @@ dist/
 .direnv/
 .pnpm-home/
 .stdb-data/
-.lf-data/
+.wl-data/
 examples/todo-client/src/module_bindings/
 *.log
 .DS_Store

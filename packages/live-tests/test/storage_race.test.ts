@@ -5,7 +5,7 @@
  *  1. `NodeFsStorage.write` used one temp name per target, so two concurrent
  *     writes of the same file raced on the same temp path. Now every write
  *     gets its own temp name.
- *  2. `LocalFirst.close()` did not await a snapshot already in flight, so
+ *  2. `Worldline.close()` did not await a snapshot already in flight, so
  *     removing the directory right after `close()` made that write fail.
  *     Now `close()` waits for it.
  */
@@ -13,7 +13,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { NodeFsStorage } from 'stdb-localfirst/client/node';
+import { NodeFsStorage } from '@kamadadze/worldline/client/node';
 
 describe('NodeFsStorage', () => {
   it('concurrent writes of the same file both succeed and leave a whole file', async () => {

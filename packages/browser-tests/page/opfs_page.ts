@@ -1,4 +1,4 @@
-import { OpfsStorage } from 'stdb-localfirst/client';
+import { OpfsStorage } from '@kamadadze/worldline/client';
 import { opfsRoundTrip, opfsTornLog } from './opfs_ops';
 
 /** Page entry for the adapter-only tests (no SpacetimeDB needed). */

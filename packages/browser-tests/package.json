@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Headless-browser tests for stdb-localfirst (OPFS adapter and full sync against a real local SpacetimeDB)",
+  "description": "Headless-browser tests for @kamadadze/worldline (OPFS adapter and full sync against a real local SpacetimeDB)",
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "spacetimedb": "2.10.0",
-    "stdb-localfirst": "workspace:*",
+    "@kamadadze/worldline": "workspace:*",
     "todo-module": "workspace:*"
   },
   "devDependencies": {

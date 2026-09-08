@@ -63,8 +63,8 @@ async function waitForPing(url: string, timeoutMs: number): Promise<void> {
  */
 export async function startSpacetime(): Promise<LocalSpacetime> {
   const port = await freePort();
-  const dataDir = await mkdtemp(join(tmpdir(), 'stdb-lf-data-'));
-  const configDir = await mkdtemp(join(tmpdir(), 'stdb-lf-config-'));
+  const dataDir = await mkdtemp(join(tmpdir(), 'worldline-data-'));
+  const configDir = await mkdtemp(join(tmpdir(), 'worldline-config-'));
   const httpUrl = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}`;
   const env = { ...process.env, HOME: configDir, XDG_CONFIG_HOME: join(configDir, '.config') };

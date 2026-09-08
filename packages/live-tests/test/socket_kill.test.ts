@@ -44,7 +44,7 @@ describe('socket killed mid-flight', () => {
       await Promise.all(handles.map(h => h.durable));
       const conn = await connect({
         wsUrl: server.wsUrl,
-        db: 'todo-lf',
+        db: 'todo-wl',
         token,
         onDisconnect: () => c.lf.disconnect(),
       });
@@ -60,7 +60,7 @@ describe('socket killed mid-flight', () => {
 
       const again = await connect({
         wsUrl: server.wsUrl,
-        db: 'todo-lf',
+        db: 'todo-wl',
         token,
         onDisconnect: () => c.lf.disconnect(),
       });
@@ -77,7 +77,7 @@ describe('socket killed mid-flight', () => {
     const rows = await server.sqlRows('SELECT * FROM counters');
     expect(rows.length).toBe(perRound);
     for (const row of rows) expect(Number(row[1])).toBe(rounds);
-    expect(await server.sqlCount('lf.applied_intents')).toBe(rounds * perRound);
+    expect(await server.sqlCount('wl.applied_intents')).toBe(rounds * perRound);
     await c.cleanup();
   });
 
@@ -88,7 +88,7 @@ describe('socket killed mid-flight', () => {
 
     const first = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => c.lf.disconnect(),
     });
     attach(c.lf, first.conn);
@@ -99,7 +99,7 @@ describe('socket killed mid-flight', () => {
     await server.restart();
     const again = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       token: first.token,
       onDisconnect: () => c.lf.disconnect(),
     });

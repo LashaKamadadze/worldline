@@ -19,7 +19,7 @@ afterAll(async () => {
 
 describe('purge schedule and applied_intents', () => {
   it('init installed exactly one purge schedule row with the default retention', async () => {
-    const rows = await server.sqlRows('SELECT * FROM lf.purge_schedule');
+    const rows = await server.sqlRows('SELECT * FROM wl.purge_schedule');
     expect(rows.length).toBe(1);
     const [, scheduledAt, retention] = rows[0] as any[];
     // SATS JSON encodes a sum as [variant_index, payload]; Interval is variant 0
@@ -33,14 +33,14 @@ describe('purge schedule and applied_intents', () => {
     const c = await openLocal();
     const conn = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => c.lf.disconnect(),
     });
     attach(c.lf, conn.conn);
     const handles = [1, 2, 3].map(i => c.lf.call(mod.bump, { name: 'p', by: BigInt(i) }));
     for (const h of handles) expect(await h.settled).toBe('acked');
     await drained(c.lf);
-    const rows = await server.sqlRows('SELECT * FROM lf.applied_intents');
+    const rows = await server.sqlRows('SELECT * FROM wl.applied_intents');
     expect(rows.length).toBe(3);
     console.log('applied_intents row shape:', JSON.stringify(rows[0]));
     const ids = new Set(handles.map(h => h.intentId.asBigInt().toString()));
@@ -78,7 +78,7 @@ describe('identity', () => {
     const offline = c.lf.identity.toHexString();
     const conn = await connect({
       wsUrl: server.wsUrl,
-      db: 'todo-lf',
+      db: 'todo-wl',
       onDisconnect: () => c.lf.disconnect(),
     });
     attach(c.lf, conn.conn);
@@ -98,7 +98,7 @@ describe('identity', () => {
     // A second connection with the saved token is the same principal.
     conn.conn.disconnect();
     await conn.closed;
-    const again = await connect({ wsUrl: server.wsUrl, db: 'todo-lf', token: conn.token });
+    const again = await connect({ wsUrl: server.wsUrl, db: 'todo-wl', token: conn.token });
     expect(again.identity.toHexString()).toBe(conn.identity.toHexString());
     again.conn.disconnect();
     await c.cleanup();

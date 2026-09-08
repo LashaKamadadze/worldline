@@ -1,5 +1,5 @@
 /**
- * Client-side helpers: a real SDK `DbConnection` in Node, and a `LocalFirst`
+ * Client-side helpers: a real SDK `DbConnection` in Node, and a `Worldline`
  * backed by `NodeFsStorage` in a temp directory, wired with `createSdkLink`
  * the way the README tells applications to do it.
  */
@@ -8,16 +8,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Identity, Uuid } from 'spacetimedb';
 import {
-  LocalFirst,
+  Worldline,
   createSdkLink,
   encodeSessionArgs,
   sessionReducerName,
   type IntentEvent,
-  type LocalFirstOptions,
+  type WorldlineOptions,
   type Session,
   type WorkingSet,
-} from 'stdb-localfirst/client';
-import { NodeFsStorage } from 'stdb-localfirst/client/node';
+} from '@kamadadze/worldline/client';
+import { NodeFsStorage } from '@kamadadze/worldline/client/node';
 import * as mod from 'todo-module';
 import { DbConnection, reducers } from '../generated/index';
 
@@ -32,14 +32,14 @@ export const uuid = (): Uuid => Uuid.fromRandomBytesV4(crypto.getRandomValues(ne
 
 /**
  * Open a session for a raw SDK connection that calls wrapped reducers itself
- * (bypassing LocalFirst). Returns the fields such calls must carry.
+ * (bypassing Worldline). Returns the fields such calls must carry.
  */
 export async function beginRawSession(
   conn: DbConnection,
   session: Session = { clientId: uuid(), epoch: 1n }
-): Promise<{ lfClient: Uuid; lfEpoch: bigint }> {
-  await conn.callReducer(sessionReducerName('lf'), encodeSessionArgs(session));
-  return { lfClient: session.clientId, lfEpoch: session.epoch };
+): Promise<{ wlClient: Uuid; wlEpoch: bigint }> {
+  await conn.callReducer(sessionReducerName('wl'), encodeSessionArgs(session));
+  return { wlClient: session.clientId, wlEpoch: session.epoch };
 }
 
 export interface Connected {
@@ -78,7 +78,7 @@ export function connect(opts: {
 }
 
 export interface LocalClient {
-  lf: LocalFirst;
+  lf: Worldline;
   dir: string;
   events: IntentEvent[];
   /** Reopen from the same directory (simulates an app restart). */
@@ -87,10 +87,10 @@ export interface LocalClient {
 }
 
 export async function openLocal(
-  opts: Partial<LocalFirstOptions> & { dir?: string } = {}
+  opts: Partial<WorldlineOptions> & { dir?: string } = {}
 ): Promise<LocalClient> {
-  const dir = opts.dir ?? (await mkdtemp(join(tmpdir(), 'stdb-lf-client-')));
-  const lf = await LocalFirst.open({
+  const dir = opts.dir ?? (await mkdtemp(join(tmpdir(), 'worldline-client-')));
+  const lf = await Worldline.open({
     module: mod as any,
     reducers: reducers,
     storage: new NodeFsStorage(dir),
@@ -112,13 +112,13 @@ export async function openLocal(
   };
 }
 
-/** Attach a live connection to a LocalFirst exactly as the README documents. */
-export function attach(lf: LocalFirst, conn: DbConnection): void {
+/** Attach a live connection to a Worldline exactly as the README documents. */
+export function attach(lf: Worldline, conn: DbConnection): void {
   lf.connect(createSdkLink(conn, { workingSet: WORKING_SET, accessors: ACCESSORS }));
 }
 
 /** Wait until nothing is pending and the overlay is empty. */
-export async function drained(lf: LocalFirst, timeoutMs = 30_000): Promise<void> {
+export async function drained(lf: Worldline, timeoutMs = 30_000): Promise<void> {
   const start = Date.now();
   while (lf.pending().length > 0 || lf.store.hasOverlay()) {
     if (Date.now() - start > timeoutMs) {
@@ -153,6 +153,6 @@ export function serverView(conn: DbConnection): { todos: string[]; counters: str
   return { todos: canon(conn.db.todos.iter()), counters: canon(conn.db.counters.iter()) };
 }
 
-export function localView(lf: LocalFirst): { todos: string[]; counters: string[] } {
+export function localView(lf: Worldline): { todos: string[]; counters: string[] } {
   return { todos: canon(lf.db.todos.iter()), counters: canon(lf.db.counters.iter()) };
 }

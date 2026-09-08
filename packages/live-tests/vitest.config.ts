@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 // The consumer module and the library import `spacetimedb/server`, which imports the
 // host-only `spacetime:sys@x.y` module; alias it to the shim so reducer bodies can run
 // in Node for prediction.
-const shim = fileURLToPath(new URL('../localfirst/src/sys-shim/index.ts', import.meta.url));
+const shim = fileURLToPath(new URL('../worldline/src/sys-shim/index.ts', import.meta.url));
 
 export default defineConfig({
   resolve: {
@@ -18,7 +18,7 @@ export default defineConfig({
     testTimeout: 180_000,
     hookTimeout: 180_000,
     server: {
-      deps: { inline: ['spacetimedb', 'todo-module', 'stdb-localfirst'] },
+      deps: { inline: ['spacetimedb', 'todo-module', '@kamadadze/worldline'] },
     },
   },
 });
